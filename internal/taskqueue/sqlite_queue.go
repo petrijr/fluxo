@@ -39,7 +39,8 @@ func (q *SQLiteQueue) initSchema() error {
 			signal_name TEXT,
 			payload BLOB,
 			enqueued_at INTEGER NOT NULL,
-			not_before INTEGER NOT NULL
+			not_before INTEGER NOT NULL,
+			attempts INTEGER NOT NULL
 		);
 	`)
 	return err
@@ -65,8 +66,8 @@ func (q *SQLiteQueue) Enqueue(ctx context.Context, t Task) error {
 	}
 
 	_, err = q.db.ExecContext(ctx, `
-		INSERT INTO tasks (type, workflow_name, instance_id, signal_name, payload, enqueued_at, not_before)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO tasks (type, workflow_name, instance_id, signal_name, payload, enqueued_at, not_before, attempts)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(t.Type),
 		t.WorkflowName,
 		t.InstanceID,
@@ -74,6 +75,7 @@ func (q *SQLiteQueue) Enqueue(ctx context.Context, t Task) error {
 		payloadBytes,
 		enqueuedAt,
 		notBefore,
+		t.Attempts,
 	)
 	return err
 }
@@ -102,15 +104,16 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 			payload     []byte
 			enqueuedInt int64
 			notBefore   int64
+			attempts    int
 		)
 
 		row := tx.QueryRowContext(ctx, `
-			SELECT id, type, workflow_name, instance_id, signal_name, payload, enqueued_at, not_before
+			SELECT id, type, workflow_name, instance_id, signal_name, payload, enqueued_at, not_before, attempts
 			FROM tasks
 			WHERE not_before <= ?
 			ORDER BY not_before, id
 			LIMIT 1`, now)
-		err = row.Scan(&id, &typeStr, &wfName, &instanceID, &signalName, &payload, &enqueuedInt, &notBefore)
+		err = row.Scan(&id, &typeStr, &wfName, &instanceID, &signalName, &payload, &enqueuedInt, &notBefore, &attempts)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				_ = tx.Rollback()
@@ -166,6 +169,7 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 			Payload:    decoded,
 			EnqueuedAt: time.Unix(0, enqueuedInt),
 			NotBefore:  time.Unix(0, notBefore),
+			Attempts:   attempts,
 		}
 
 		return task, nil

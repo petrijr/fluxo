@@ -36,6 +36,11 @@ type Task struct {
 	// NotBefore is the earliest time this task should be eligible
 	// for processing. Zero value means "immediately" (i.e., at enqueue time).
 	NotBefore time.Time
+
+	// Attempts counts how many times this task has been processed (i.e.,
+	// how many times a worker has tried to handle it). It is managed by
+	// the worker when it re-enqueues failed tasks.
+	Attempts int
 }
 
 // Queue is a simple async task queue interface.

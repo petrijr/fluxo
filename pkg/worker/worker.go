@@ -19,17 +19,40 @@ type StartWorkflowPayload struct {
 	Input any
 }
 
+// Config controls worker-level retries of tasks.
+type Config struct {
+	// MaxAttempts is the maximum number of attempts to process a given task,
+	// including the initial one. If <= 0, it defaults to 1 (no retries).
+	MaxAttempts int
+
+	// Backoff is the delay between failed attempts when re-enqueuing a task.
+	// If zero, retries happen immediately (i.e., the task is re-enqueued with NotBefore = now).
+	Backoff time.Duration
+}
+
 // Worker pulls tasks from a Queue and executes them using an Engine.
 type Worker struct {
 	engine api.Engine
 	queue  taskqueue.Queue
+	cfg    Config
 }
 
 // New creates a new Worker.
 func New(engine api.Engine, queue taskqueue.Queue) *Worker {
+	return NewWithConfig(engine, queue, Config{
+		MaxAttempts: 1,
+	})
+}
+
+// NewWithConfig creates a Worker with the given retry config.
+func NewWithConfig(engine api.Engine, queue taskqueue.Queue, cfg Config) *Worker {
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = 1
+	}
 	return &Worker{
 		engine: engine,
 		queue:  queue,
+		cfg:    cfg,
 	}
 }
 
@@ -44,6 +67,8 @@ func (w *Worker) EnqueueStartWorkflow(ctx context.Context, workflowName string, 
 			Input: input,
 		},
 		EnqueuedAt: time.Now(),
+		NotBefore:  time.Time{},
+		Attempts:   0,
 	}
 	return w.queue.Enqueue(ctx, t)
 }
@@ -60,6 +85,7 @@ func (w *Worker) EnqueueStartWorkflowAt(ctx context.Context, workflowName string
 		},
 		EnqueuedAt: time.Now(),
 		NotBefore:  at,
+		Attempts:   0,
 	}
 	return w.queue.Enqueue(ctx, t)
 }
@@ -74,6 +100,8 @@ func (w *Worker) EnqueueSignal(ctx context.Context, instanceID string, name stri
 		SignalName: name,
 		Payload:    payload,
 		EnqueuedAt: time.Now(),
+		NotBefore:  time.Time{},
+		Attempts:   0,
 	}
 	return w.queue.Enqueue(ctx, t)
 }
@@ -89,6 +117,7 @@ func (w *Worker) EnqueueSignalAt(ctx context.Context, instanceID string, name st
 		Payload:    payload,
 		EnqueuedAt: time.Now(),
 		NotBefore:  at,
+		Attempts:   0,
 	}
 	return w.queue.Enqueue(ctx, t)
 }
@@ -110,6 +139,33 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
+	handleErr := func(err error) error {
+		if err == nil {
+			return nil
+		}
+
+		// Check whether we should retry this task at the worker level.
+		if task.Attempts+1 < w.cfg.MaxAttempts {
+			// Prepare a new scheduled task with incremented Attempts.
+			retryTask := *task
+			retryTask.Attempts = task.Attempts + 1
+			if w.cfg.Backoff > 0 {
+				retryTask.NotBefore = time.Now().Add(w.cfg.Backoff)
+			} else {
+				retryTask.NotBefore = time.Now()
+			}
+			// Enqueue retry; if this fails, we propagate the original error.
+			if enqErr := w.queue.Enqueue(ctx, retryTask); enqErr != nil {
+				return err
+			}
+			// We successfully scheduled a retry; treat this processing as successful.
+			return nil
+		}
+
+		// No retries left: propagate the error.
+		return err
+	}
+
 	switch task.Type {
 	case taskqueue.TaskTypeStartWorkflow:
 		payload, ok := task.Payload.(StartWorkflowPayload)
@@ -117,12 +173,11 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 			return true, errors.New("invalid payload type for start-workflow task")
 		}
 		_, runErr := w.engine.Run(ctx, task.WorkflowName, payload.Input)
-		return true, runErr
+		return true, handleErr(runErr)
 
 	case taskqueue.TaskTypeSignal:
-		// Payload is passed directly to engine.Signal.
 		_, sigErr := w.engine.Signal(ctx, task.InstanceID, task.SignalName, task.Payload)
-		return true, sigErr
+		return true, handleErr(sigErr)
 
 	default:
 		// Unknown task type; mark as processed but return an error so this isn't silently ignored.
