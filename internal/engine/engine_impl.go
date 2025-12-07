@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/petrijr/fluxo/internal/persistence"
 	"github.com/petrijr/fluxo/pkg/api"
@@ -165,27 +166,65 @@ func (e *engineImpl) executeSteps(
 	input any,
 ) (*api.WorkflowInstance, error) {
 	current := input
-	var err error
 
 	for i := startIndex; i < len(def.Steps); i++ {
+		step := def.Steps[i]
+
 		inst.CurrentStep = i
 		_ = e.instances.UpdateInstance(inst)
 
-		select {
-		case <-ctx.Done():
-			inst.Status = api.StatusFailed
-			inst.Err = ctx.Err()
-			_ = e.instances.UpdateInstance(inst)
-			return inst, ctx.Err()
-		default:
+		// Determine max attempts for this step.
+		maxAttempts := 1
+		var backoff time.Duration
+		if step.Retry != nil {
+			if step.Retry.MaxAttempts > 0 {
+				maxAttempts = step.Retry.MaxAttempts
+			}
+			backoff = step.Retry.Backoff
 		}
 
-		current, err = def.Steps[i].Fn(ctx, current)
-		if err != nil {
-			inst.Status = api.StatusFailed
-			inst.Err = err
-			_ = e.instances.UpdateInstance(inst)
-			return inst, err
+		var lastErr error
+
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			select {
+			case <-ctx.Done():
+				inst.Status = api.StatusFailed
+				inst.Err = ctx.Err()
+				_ = e.instances.UpdateInstance(inst)
+				return inst, ctx.Err()
+			default:
+			}
+
+			next, err := step.Fn(ctx, current)
+			if err == nil {
+				// Success: advance to next step with new value.
+				current = next
+				lastErr = nil
+				break
+			}
+
+			lastErr = err
+
+			// If this was the last allowed attempt, mark failed.
+			if attempt == maxAttempts {
+				inst.Status = api.StatusFailed
+				inst.Err = lastErr
+				_ = e.instances.UpdateInstance(inst)
+				return inst, lastErr
+			}
+
+			// Wait before next attempt, if backoff is configured.
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+					inst.Status = api.StatusFailed
+					inst.Err = ctx.Err()
+					_ = e.instances.UpdateInstance(inst)
+					return inst, ctx.Err()
+				case <-time.After(backoff):
+					// continue to next attempt
+				}
+			}
 		}
 	}
 

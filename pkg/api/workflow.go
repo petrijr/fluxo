@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 )
 
 // Status represents the lifecycle state of a workflow instance.
@@ -20,8 +21,9 @@ type StepFunc func(ctx context.Context, input any) (any, error)
 
 // StepDefinition describes a named step.
 type StepDefinition struct {
-	Name string
-	Fn   StepFunc
+	Name  string
+	Fn    StepFunc
+	Retry *RetryPolicy
 }
 
 // WorkflowDefinition describes a workflow as a sequence of steps.
@@ -59,6 +61,19 @@ type InstanceListOptions struct {
 
 	// Status, if non-empty, limits results to instances with the given status.
 	Status Status
+}
+
+// RetryPolicy controls how a step is retried when it returns an error.
+// MaxAttempts includes the first attempt. For example:
+//
+//	MaxAttempts = 1 => no retries (just the initial call)
+//	MaxAttempts = 3 => initial call + up to 2 retries
+//
+// Backoff is the delay between failed attempts. It is not applied before
+// the first attempt. If zero, retries happen immediately.
+type RetryPolicy struct {
+	MaxAttempts int
+	Backoff     time.Duration
 }
 
 // Engine is the high-level engine API (iteration 1: synchronous).
