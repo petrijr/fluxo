@@ -1,0 +1,266 @@
+package persistence
+
+import (
+	"bytes"
+	"database/sql"
+	"encoding/gob"
+	"errors"
+	"strings"
+
+	"github.com/petrijr/fluxo/pkg/api"
+)
+
+// SQLiteInstanceStore is an InstanceStore backed by SQLite.
+//
+// It expects an *sql.DB that uses a SQLite driver (for example,
+// "modernc.org/sqlite"). The caller is responsible for importing
+// the driver, e.g.:
+//
+//	import _ "modernc.org/sqlite"
+type SQLiteInstanceStore struct {
+	db *sql.DB
+}
+
+// Ensure SQLiteInstanceStore implements InstanceStore.
+var _ InstanceStore = (*SQLiteInstanceStore)(nil)
+
+// NewSQLiteInstanceStore initializes the required schema in the given
+// database and returns a new SQLiteInstanceStore.
+func NewSQLiteInstanceStore(db *sql.DB) (*SQLiteInstanceStore, error) {
+	s := &SQLiteInstanceStore{db: db}
+	if err := s.initSchema(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *SQLiteInstanceStore) initSchema() error {
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS instances (
+			id TEXT PRIMARY KEY,
+			workflow_name TEXT NOT NULL,
+			status TEXT NOT NULL,
+			current_step INTEGER NOT NULL,
+			input BLOB,
+			output BLOB,
+			error TEXT
+		);`,
+	)
+	return err
+}
+
+func (s *SQLiteInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
+	input, err := encodeValue(inst.Input)
+	if err != nil {
+		return err
+	}
+
+	output, err := encodeValue(inst.Output)
+	if err != nil {
+		return err
+	}
+
+	errStr := ""
+	if inst.Err != nil {
+		errStr = inst.Err.Error()
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO instances (id, workflow_name, status, current_step, input, output, error)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		inst.ID,
+		inst.Name,
+		string(inst.Status),
+		inst.CurrentStep,
+		input,
+		output,
+		errStr,
+	)
+	return err
+}
+
+func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
+	input, err := encodeValue(inst.Input)
+	if err != nil {
+		return err
+	}
+
+	output, err := encodeValue(inst.Output)
+	if err != nil {
+		return err
+	}
+
+	errStr := ""
+	if inst.Err != nil {
+		errStr = inst.Err.Error()
+	}
+
+	res, err := s.db.Exec(`
+		UPDATE instances
+		SET workflow_name = ?, status = ?, current_step = ?, input = ?, output = ?, error = ?
+		WHERE id = ?`,
+		inst.Name,
+		string(inst.Status),
+		inst.CurrentStep,
+		input,
+		output,
+		errStr,
+		inst.ID,
+	)
+	if err != nil {
+		return err
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrInstanceNotFound
+	}
+
+	return nil
+}
+
+func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
+	row := s.db.QueryRow(`
+		SELECT id, workflow_name, status, current_step, input, output, error
+		FROM instances
+		WHERE id = ?`,
+		id,
+	)
+
+	var inst api.WorkflowInstance
+	var statusStr string
+	var input, output []byte
+	var errStr sql.NullString
+	var currentStep int
+
+	if err := row.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &errStr); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrInstanceNotFound
+		}
+		return nil, err
+	}
+
+	inst.Status = api.Status(statusStr)
+	inst.CurrentStep = currentStep
+
+	inVal, err := decodeValue(input)
+	if err != nil {
+		return nil, err
+	}
+	inst.Input = inVal
+
+	outVal, err := decodeValue(output)
+	if err != nil {
+		return nil, err
+	}
+	inst.Output = outVal
+
+	if errStr.Valid && errStr.String != "" {
+		inst.Err = errors.New(errStr.String)
+	}
+
+	return &inst, nil
+}
+
+func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.WorkflowInstance, error) {
+	query := `
+		SELECT id, workflow_name, status, input, output, error
+		FROM instances`
+	var args []any
+	var clauses []string
+
+	if filter.WorkflowName != "" {
+		clauses = append(clauses, "workflow_name = ?")
+		args = append(args, filter.WorkflowName)
+	}
+	if filter.Status != "" {
+		clauses = append(clauses, "status = ?")
+		args = append(args, string(filter.Status))
+	}
+
+	if len(clauses) > 0 {
+		query = query + " WHERE " + strings.Join(clauses, " AND ")
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var instances []*api.WorkflowInstance
+
+	for rows.Next() {
+		var inst api.WorkflowInstance
+		var statusStr string
+		var input, output []byte
+		var errStr sql.NullString
+
+		if err := rows.Scan(&inst.ID, &inst.Name, &statusStr, &input, &output, &errStr); err != nil {
+			return nil, err
+		}
+
+		inst.Status = api.Status(statusStr)
+
+		inVal, err := decodeValue(input)
+		if err != nil {
+			return nil, err
+		}
+		inst.Input = inVal
+
+		outVal, err := decodeValue(output)
+		if err != nil {
+			return nil, err
+		}
+		inst.Output = outVal
+
+		if errStr.Valid && errStr.String != "" {
+			inst.Err = errors.New(errStr.String)
+		}
+
+		// Note: inst is re-used each loop, so take a copy.
+		copied := inst
+		instances = append(instances, &copied)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return instances, nil
+}
+
+// encodeValue serializes arbitrary Go values using encoding/gob.
+// Callers must ensure that values are gob-encodable.
+func encodeValue(v any) ([]byte, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+
+	// Important: encode as interface{} so we can safely decode into interface{}.
+	var iv = v
+	if err := enc.Encode(&iv); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// decodeValue deserializes gob-encoded data back into an `any`.
+func decodeValue(data []byte) (any, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	buf := bytes.NewBuffer(data)
+	dec := gob.NewDecoder(buf)
+
+	var iv any
+	if err := dec.Decode(&iv); err != nil {
+		return nil, err
+	}
+	return iv, nil
+}
