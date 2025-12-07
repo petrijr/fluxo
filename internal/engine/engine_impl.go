@@ -203,6 +203,15 @@ func (e *engineImpl) executeSteps(
 				break
 			}
 
+			// NEW: wait-for-signal special case (sigName = _)
+			if _, ok := api.IsWaitForSignalError(err); ok {
+				inst.Status = api.StatusWaiting
+				inst.Err = nil
+				// We could track sigName somewhere later if needed.
+				_ = e.instances.UpdateInstance(inst)
+				return inst, err
+			}
+
 			lastErr = err
 
 			// If this was the last allowed attempt, mark failed.
@@ -234,4 +243,41 @@ func (e *engineImpl) executeSteps(
 	_ = e.instances.UpdateInstance(inst)
 
 	return inst, nil
+}
+
+func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload any) (*api.WorkflowInstance, error) {
+	inst, err := e.instances.GetInstance(id)
+	if err != nil {
+		if errors.Is(err, persistence.ErrInstanceNotFound) {
+			return nil, fmt.Errorf("instance not found: %s", id)
+		}
+		return nil, err
+	}
+
+	if inst.Status != api.StatusWaiting {
+		return nil, fmt.Errorf("cannot signal instance %s in status %s", id, inst.Status)
+	}
+
+	def, err := e.workflows.GetWorkflow(inst.Name)
+	if err != nil {
+		if errors.Is(err, persistence.ErrWorkflowNotFound) {
+			return nil, fmt.Errorf("workflow definition not found for instance %s (name=%s)", id, inst.Name)
+		}
+		return nil, err
+	}
+
+	// Prepare signal payload as the new input to the waiting step.
+	inst.Status = api.StatusRunning
+	inst.Err = nil
+	inst.Input = api.SignalPayload{
+		Name: name,
+		Data: payload,
+	}
+
+	if err := e.instances.UpdateInstance(inst); err != nil {
+		return inst, err
+	}
+
+	// Resume from the waiting step.
+	return e.executeSteps(ctx, def, inst, inst.CurrentStep, inst.Input)
 }
