@@ -9,6 +9,7 @@ import (
 
 func init() {
 	gob.Register(SignalPayload{})
+	gob.Register(TimeoutPayload{})
 }
 
 // Status represents the lifecycle state of a workflow instance.
@@ -151,6 +152,12 @@ type RetryPolicy struct {
 type SignalPayload struct {
 	Name string
 	Data any
+}
+
+// TimeoutPayload is a special payload used for auto-expiry signals.
+// Workflows can check for this type to detect that a wait timed out.
+type TimeoutPayload struct {
+	Reason string
 }
 
 // waitForSignalError is returned by steps that want to park the workflow

@@ -28,6 +28,11 @@ type Config struct {
 	// Backoff is the delay between failed attempts when re-enqueuing a task.
 	// If zero, retries happen immediately (i.e., the task is re-enqueued with NotBefore = now).
 	Backoff time.Duration
+
+	// DefaultSignalTimeout is how long the worker should wait after a workflow
+	// parks on a signal before scheduling an automatic timeout signal.
+	// If zero, no auto-timeout signals are scheduled.
+	DefaultSignalTimeout time.Duration
 }
 
 // Worker pulls tasks from a Queue and executes them using an Engine.
@@ -129,7 +134,6 @@ func (w *Worker) EnqueueSignalAt(ctx context.Context, instanceID string, name st
 func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 	task, err := w.queue.Dequeue(ctx)
 	if err != nil {
-		// Context cancellation or other dequeue error: nothing processed.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false, err
 		}
@@ -146,7 +150,6 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 
 		// Check whether we should retry this task at the worker level.
 		if task.Attempts+1 < w.cfg.MaxAttempts {
-			// Prepare a new scheduled task with incremented Attempts.
 			retryTask := *task
 			retryTask.Attempts = task.Attempts + 1
 			if w.cfg.Backoff > 0 {
@@ -154,15 +157,15 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 			} else {
 				retryTask.NotBefore = time.Now()
 			}
-			// Enqueue retry; if this fails, we propagate the original error.
 			if enqErr := w.queue.Enqueue(ctx, retryTask); enqErr != nil {
+				// Failed to schedule retry; propagate original error.
 				return err
 			}
-			// We successfully scheduled a retry; treat this processing as successful.
+			// Retry scheduled; treat this processing as successful.
 			return nil
 		}
 
-		// No retries left: propagate the error.
+		// No retries left.
 		return err
 	}
 
@@ -172,15 +175,51 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 		if !ok {
 			return true, errors.New("invalid payload type for start-workflow task")
 		}
-		_, runErr := w.engine.Run(ctx, task.WorkflowName, payload.Input)
-		return true, handleErr(runErr)
+
+		inst, runErr := w.engine.Run(ctx, task.WorkflowName, payload.Input)
+		if runErr != nil {
+			// Special case: workflow is now WAITING for a signal.
+			if sigName, ok := api.IsWaitForSignalError(runErr); ok && inst != nil {
+				if w.cfg.DefaultSignalTimeout > 0 {
+					timeoutTask := taskqueue.Task{
+						Type:       taskqueue.TaskTypeSignal,
+						InstanceID: inst.ID,
+						SignalName: sigName,
+						Payload: api.TimeoutPayload{
+							Reason: "signal timeout",
+						},
+						EnqueuedAt: time.Now(),
+						NotBefore:  time.Now().Add(w.cfg.DefaultSignalTimeout),
+						Attempts:   0,
+					}
+					_ = w.queue.Enqueue(ctx, timeoutTask)
+				}
+				// We successfully parked the workflow and possibly scheduled a timeout.
+				// This is not a failure of the task itself.
+				return true, nil
+			}
+
+			// Other errors: use worker-level retry logic.
+			return true, handleErr(runErr)
+		}
+
+		// Run succeeded normally.
+		return true, nil
 
 	case taskqueue.TaskTypeSignal:
+		// Deliver the signal.
 		_, sigErr := w.engine.Signal(ctx, task.InstanceID, task.SignalName, task.Payload)
+
+		// If this is an auto-timeout signal, we consider it best effort:
+		// - If the instance is no longer waiting (e.g., approved early),
+		//   Signal will fail; we just swallow the error and do not retry.
+		if _, isTimeout := task.Payload.(api.TimeoutPayload); isTimeout {
+			return true, nil
+		}
+
 		return true, handleErr(sigErr)
 
 	default:
-		// Unknown task type; mark as processed but return an error so this isn't silently ignored.
 		return true, errors.New("unknown task type: " + string(task.Type))
 	}
 }
