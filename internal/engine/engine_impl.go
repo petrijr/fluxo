@@ -151,6 +151,43 @@ func (e *engineImpl) Resume(ctx context.Context, id string) (*api.WorkflowInstan
 	return e.executeSteps(ctx, def, inst, 0, inst.Input)
 }
 
+func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload any) (*api.WorkflowInstance, error) {
+	inst, err := e.instances.GetInstance(id)
+	if err != nil {
+		if errors.Is(err, persistence.ErrInstanceNotFound) {
+			return nil, fmt.Errorf("instance not found: %s", id)
+		}
+		return nil, err
+	}
+
+	if inst.Status != api.StatusWaiting {
+		return nil, fmt.Errorf("cannot signal instance %s in status %s", id, inst.Status)
+	}
+
+	def, err := e.workflows.GetWorkflow(inst.Name)
+	if err != nil {
+		if errors.Is(err, persistence.ErrWorkflowNotFound) {
+			return nil, fmt.Errorf("workflow definition not found for instance %s (name=%s)", id, inst.Name)
+		}
+		return nil, err
+	}
+
+	// Prepare signal payload as the new input to the waiting step.
+	inst.Status = api.StatusRunning
+	inst.Err = nil
+	inst.Input = api.SignalPayload{
+		Name: name,
+		Data: payload,
+	}
+
+	if err := e.instances.UpdateInstance(inst); err != nil {
+		return inst, err
+	}
+
+	// Resume from the waiting step.
+	return e.executeSteps(ctx, def, inst, inst.CurrentStep, inst.Input)
+}
+
 func (e *engineImpl) nextInstanceID() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -195,7 +232,12 @@ func (e *engineImpl) executeSteps(
 			default:
 			}
 
-			next, err := step.Fn(ctx, current)
+			// Attach engine to the context for this step invocation so that
+			// StartChildrenStep / WaitForChildrenStep (and similar helpers)
+			// can use api.EngineFromContext(ctx).
+			stepCtx := api.WithEngine(ctx, e)
+
+			next, err := step.Fn(stepCtx, current)
 			if err == nil {
 				// Success: advance to next step with new value.
 				current = next
@@ -243,41 +285,4 @@ func (e *engineImpl) executeSteps(
 	_ = e.instances.UpdateInstance(inst)
 
 	return inst, nil
-}
-
-func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload any) (*api.WorkflowInstance, error) {
-	inst, err := e.instances.GetInstance(id)
-	if err != nil {
-		if errors.Is(err, persistence.ErrInstanceNotFound) {
-			return nil, fmt.Errorf("instance not found: %s", id)
-		}
-		return nil, err
-	}
-
-	if inst.Status != api.StatusWaiting {
-		return nil, fmt.Errorf("cannot signal instance %s in status %s", id, inst.Status)
-	}
-
-	def, err := e.workflows.GetWorkflow(inst.Name)
-	if err != nil {
-		if errors.Is(err, persistence.ErrWorkflowNotFound) {
-			return nil, fmt.Errorf("workflow definition not found for instance %s (name=%s)", id, inst.Name)
-		}
-		return nil, err
-	}
-
-	// Prepare signal payload as the new input to the waiting step.
-	inst.Status = api.StatusRunning
-	inst.Err = nil
-	inst.Input = api.SignalPayload{
-		Name: name,
-		Data: payload,
-	}
-
-	if err := e.instances.UpdateInstance(inst); err != nil {
-		return inst, err
-	}
-
-	// Resume from the waiting step.
-	return e.executeSteps(ctx, def, inst, inst.CurrentStep, inst.Input)
 }

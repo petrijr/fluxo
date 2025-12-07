@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/gob"
 	"errors"
+	"fmt"
+	"reflect"
+	"sync"
 	"time"
 )
 
@@ -201,6 +204,271 @@ func SwitchStep(selector SelectorFunc, branches map[string]StepFunc, defaultStep
 	}
 }
 
+// ParallelStep returns a StepFunc that runs multiple child steps in parallel
+// and collects their outputs.
+//
+// Semantics:
+//   - All non-nil child steps receive the same input value.
+//   - The result is a []any whose length equals len(steps), preserving order.
+//   - If any child step returns an error, the *first* error is returned and
+//     no further processing is done after all goroutines finish.
+//   - If ctx is cancelled, ctx.Err() is returned.
+//
+// NOTE: This is an in-process parallelism helper. The underlying engine still
+// sees this as a single step, so retries/backoff apply to the whole parallel
+// group as a unit.
+func ParallelStep(steps ...StepFunc) StepFunc {
+	return func(ctx context.Context, input any) (any, error) {
+		if len(steps) == 0 {
+			// Nothing to do, just pass the value through.
+			return input, nil
+		}
+
+		type result struct {
+			index int
+			value any
+			err   error
+		}
+
+		results := make([]any, len(steps))
+		var wg sync.WaitGroup
+		var firstErr error
+		var errOnce sync.Once
+
+		for i, step := range steps {
+			i, step := i, step // capture
+
+			if step == nil {
+				// Treat nil child step as a no-op that passes the input through.
+				results[i] = input
+				continue
+			}
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				// Early abort if context already cancelled.
+				select {
+				case <-ctx.Done():
+					errOnce.Do(func() {
+						firstErr = ctx.Err()
+					})
+					return
+				default:
+				}
+
+				out, err := step(ctx, input)
+				if err != nil {
+					errOnce.Do(func() {
+						firstErr = err
+					})
+					return
+				}
+				results[i] = out
+			}()
+		}
+
+		wg.Wait()
+
+		if firstErr != nil {
+			return nil, firstErr
+		}
+
+		return results, nil
+	}
+}
+
+// ParallelMapStep returns a StepFunc that expects the input to be a slice or
+// array and runs fn in parallel for each element.
+//
+// Input:
+//   - A slice or array value (e.g. []T).
+//
+// Behavior:
+//   - For each element input[i], fn(ctx, input[i]) is executed in its own goroutine.
+//   - The outputs are collected into a []any of the same length, preserving
+//     the original order.
+//   - If any call returns an error, the first error is returned.
+//   - If ctx is cancelled, ctx.Err() is returned.
+//
+// This is a convenient fan-out/fan-in helper for data-parallel workloads.
+func ParallelMapStep(fn StepFunc) StepFunc {
+	return func(ctx context.Context, input any) (any, error) {
+		if fn == nil {
+			return input, nil
+		}
+
+		v := reflect.ValueOf(input)
+		kind := v.Kind()
+		if kind != reflect.Slice && kind != reflect.Array {
+			return nil, fmt.Errorf("ParallelMapStep expects slice or array input, got %T", input)
+		}
+
+		n := v.Len()
+		if n == 0 {
+			// Nothing to process.
+			return []any{}, nil
+		}
+
+		results := make([]any, n)
+		var wg sync.WaitGroup
+		var firstErr error
+		var errOnce sync.Once
+
+		for i := 0; i < n; i++ {
+			i := i
+			item := v.Index(i).Interface()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				select {
+				case <-ctx.Done():
+					errOnce.Do(func() {
+						firstErr = ctx.Err()
+					})
+					return
+				default:
+				}
+
+				out, err := fn(ctx, item)
+				if err != nil {
+					errOnce.Do(func() {
+						firstErr = err
+					})
+					return
+				}
+				results[i] = out
+			}()
+		}
+
+		wg.Wait()
+
+		if firstErr != nil {
+			return nil, firstErr
+		}
+
+		return results, nil
+	}
+}
+
+// StartChildrenStep returns a step that starts one or more child workflows
+// and returns their instance IDs as []string.
+//
+// The specsFn callback is given the current input and must deterministically
+// construct the list of child workflows to start.
+func StartChildrenStep(specsFn func(input any) ([]ChildWorkflowSpec, error)) StepFunc {
+	return func(ctx context.Context, input any) (any, error) {
+		if specsFn == nil {
+			return nil, errors.New("StartChildrenStep: specsFn must not be nil")
+		}
+
+		engine := EngineFromContext(ctx)
+		if engine == nil {
+			return nil, errors.New("StartChildrenStep: engine not available in context")
+		}
+
+		specs, err := specsFn(input)
+		if err != nil {
+			return nil, err
+		}
+		if len(specs) == 0 {
+			return []string{}, nil
+		}
+
+		ids := make([]string, 0, len(specs))
+		for _, s := range specs {
+			if s.Name == "" {
+				return nil, fmt.Errorf("StartChildrenStep: child workflow name is empty")
+			}
+			inst, err := engine.Run(ctx, s.Name, s.Input)
+			if err != nil {
+				return nil, fmt.Errorf("StartChildrenStep: starting child %q failed: %w", s.Name, err)
+			}
+			ids = append(ids, inst.ID)
+		}
+
+		return ids, nil
+	}
+}
+
+// WaitForChildrenStep returns a step that waits until all specified child
+// workflow instances have completed.
+//
+// getIDs extracts the child instance IDs from the input (for example, from
+// the []string returned by StartChildrenStep).
+//
+// The first implementation is "semi-durable":
+//   - It polls the engine for child status until all are COMPLETED or one
+//     FAILs.
+//   - If the process crashes, replay will re-run this step, see that some or
+//     all children are already done, and complete quickly.
+//
+// pollInterval controls how often to poll child statuses; if <= 0, a
+// default of 500ms is used.
+func WaitForChildrenStep(
+	getIDs func(input any) []string,
+	pollInterval time.Duration,
+) StepFunc {
+	if pollInterval <= 0 {
+		pollInterval = 500 * time.Millisecond
+	}
+
+	return func(ctx context.Context, input any) (any, error) {
+		if getIDs == nil {
+			return nil, errors.New("WaitForChildrenStep: getIDs must not be nil")
+		}
+
+		engine := EngineFromContext(ctx)
+		if engine == nil {
+			return nil, errors.New("WaitForChildrenStep: engine not available in context")
+		}
+
+		ids := getIDs(input)
+		if len(ids) == 0 {
+			return []any{}, nil
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+
+			allDone := true
+			outputs := make([]any, len(ids))
+
+			for i, id := range ids {
+				inst, err := engine.GetInstance(ctx, id)
+				if err != nil {
+					return nil, fmt.Errorf("WaitForChildrenStep: GetInstance(%q) failed: %w", id, err)
+				}
+
+				switch inst.Status {
+				case StatusCompleted:
+					outputs[i] = inst.Output
+				case StatusFailed:
+					if inst.Err != nil {
+						return nil, fmt.Errorf("WaitForChildrenStep: child %s failed: %w", id, inst.Err)
+					}
+					return nil, fmt.Errorf("WaitForChildrenStep: child %s failed", id)
+				default:
+					allDone = false
+				}
+			}
+
+			if allDone {
+				return outputs, nil
+			}
+
+			time.Sleep(pollInterval)
+		}
+	}
+}
+
 // StepDefinition describes a named step.
 type StepDefinition struct {
 	Name  string
@@ -324,4 +592,40 @@ type Engine interface {
 	// Signal delivers a named signal to a waiting workflow instance and
 	// resumes it from the step that requested the signal.
 	Signal(ctx context.Context, id string, name string, payload any) (*WorkflowInstance, error)
+}
+
+// --- Child workflow support & engine-in-context helpers --- //
+
+type ChildWorkflowSpec struct {
+	// Name is the workflow definition name to start as a child.
+	Name string
+	// Input is the initial input for the child workflow.
+	Input any
+}
+
+// engineContextKey is an unexported key type for storing the Engine in
+// context. Using a dedicated type avoids collisions.
+type engineContextKey struct{}
+
+// WithEngine attaches an Engine to ctx so that StepFunc implementations can
+// discover the engine (for example to start or inspect child workflows).
+//
+// This is called internally by the engine implementation before invoking
+// step functions.
+func WithEngine(ctx context.Context, e Engine) context.Context {
+	if e == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, engineContextKey{}, e)
+}
+
+// EngineFromContext retrieves the Engine previously attached with WithEngine.
+// It returns nil if no engine is present in ctx.
+func EngineFromContext(ctx context.Context) Engine {
+	if v := ctx.Value(engineContextKey{}); v != nil {
+		if e, ok := v.(Engine); ok {
+			return e
+		}
+	}
+	return nil
 }
