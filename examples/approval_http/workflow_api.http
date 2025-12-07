@@ -1,0 +1,25 @@
+###
+# Below are API requests for the example in this folder.
+
+### Submit new approval request
+POST http://localhost:8080/request
+Content-Type: application/json
+
+{
+  "requester": "Alice",
+  "amount": 123.45
+}
+
+### Approve a pending request (replace the REQ-....)
+POST http://localhost:8080/approve/REQ-1765118982024538700
+Content-Type: application/json
+
+{
+  "approved_by": "Manager"
+}
+
+### List all approval instances
+GET http://localhost:8080/instances
+
+### Show status of particular instance (replace the REQ-....)
+GET http://localhost:8080/instances/REQ-1765119029370252800

@@ -27,6 +27,13 @@ const (
 // Iteration 1: keep it simple with `any`, we can add generics later.
 type StepFunc func(ctx context.Context, input any) (any, error)
 
+// ConditionFunc decides whether a branch should be taken based on the
+// current input. It must be deterministic.
+type ConditionFunc func(input any) bool
+
+// SelectorFunc picks a branch key from the input. It must be deterministic.
+type SelectorFunc func(input any) string
+
 // SleepStep returns a StepFunc that waits for the given duration
 // before passing the input through unchanged.
 //
@@ -87,6 +94,110 @@ func WaitForSignalStep(name string) StepFunc {
 		}
 		// First invocation or mismatched signal: request to wait.
 		return nil, NewWaitForSignalError(name)
+	}
+}
+
+// WaitForAnySignalStep returns a step that parks the workflow until a signal
+// with any of the given names is delivered via Engine.Signal.
+//
+// Behavior:
+//   - At first invocation (normal forward execution), it ignores its input and
+//     returns NewWaitForSignalError(names[0]) which causes the engine to mark
+//     the instance as WAITING.
+//   - When resumed via Engine.Signal, the engine passes a SignalPayload as input
+//     (Name, Data). If Name is in the allowed list, this step returns that
+//     SignalPayload as its output and the workflow continues.
+//   - If a signal with an unexpected name is delivered, the step will request
+//     to wait again via NewWaitForSignalError(names[0]).
+//
+// This is useful for branching decisions such as approve/reject flows, where
+// the next step can switch on the SignalPayload.Name to decide behavior.
+func WaitForAnySignalStep(names ...string) StepFunc {
+	if len(names) == 0 {
+		// Degenerate case: behave like a wait-for-nothing; this is effectively
+		// a bug in the workflow definition, but we avoid panicking here.
+		return func(ctx context.Context, input any) (any, error) {
+			return nil, NewWaitForSignalError("unknown")
+		}
+	}
+
+	primary := names[0]
+	allowed := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		allowed[n] = struct{}{}
+	}
+
+	return func(ctx context.Context, input any) (any, error) {
+		if sp, ok := input.(SignalPayload); ok {
+			if _, ok := allowed[sp.Name]; ok {
+				// Resumed with one of the expected signals: pass the payload
+				// (including Name and Data) to the next step.
+				return sp, nil
+			}
+		}
+		// First invocation or unexpected signal: request to wait again.
+		return nil, NewWaitForSignalError(primary)
+	}
+}
+
+// IfStep returns a step that evaluates cond on the input and, depending
+// on the result, runs thenStep or elseStep.
+//
+// The selected branch is executed as a nested step (i.e. the engine only
+// sees this as a single step); retries/backoff for this step apply to the
+// entire nested execution.
+//
+// If elseStep is nil, the input is passed through unchanged on the false
+// branch.
+func IfStep(cond ConditionFunc, thenStep StepFunc, elseStep StepFunc) StepFunc {
+	return func(ctx context.Context, input any) (any, error) {
+		if cond == nil {
+			// Degenerate case: no condition; pass-through.
+			return input, nil
+		}
+
+		if cond(input) {
+			if thenStep == nil {
+				return input, nil
+			}
+			return thenStep(ctx, input)
+		}
+
+		if elseStep == nil {
+			return input, nil
+		}
+		return elseStep(ctx, input)
+	}
+}
+
+// SwitchStep returns a step that selects one of several branches based on
+// selector(input). The branches map holds per-key steps; if no branch
+// matches, defaultStep is used (if non-nil), otherwise the input is
+// passed through unchanged.
+//
+// As with IfStep, the chosen branch is executed as a nested step from
+// the engine's perspective.
+func SwitchStep(selector SelectorFunc, branches map[string]StepFunc, defaultStep StepFunc) StepFunc {
+	return func(ctx context.Context, input any) (any, error) {
+		if selector == nil {
+			// No selector: just run default or pass-through.
+			if defaultStep == nil {
+				return input, nil
+			}
+			return defaultStep(ctx, input)
+		}
+
+		key := selector(input)
+		if key != "" && branches != nil {
+			if step, ok := branches[key]; ok && step != nil {
+				return step(ctx, input)
+			}
+		}
+
+		if defaultStep == nil {
+			return input, nil
+		}
+		return defaultStep(ctx, input)
 	}
 }
 

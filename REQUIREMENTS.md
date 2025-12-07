@@ -30,6 +30,8 @@ system that can be embedded directly into Go services without external dependenc
     - In-memory (default)
     - SQLite
     - PostgreSQL
+    - Redis
+    - MongoDB
 - Supports durable execution:
     - Resume after crash
     - Resume after server restart
@@ -124,7 +126,7 @@ system that can be embedded directly into Go services without external dependenc
 
 ## 3.6 Additional Integrations
 
-- Kafka, NATS, RabbitMQ step triggers
+- Kafka, NATS, Redis Streams, RabbitMQ step triggers
 - gRPC / HTTP step invocation
 - Terraform provider for infrastructure
 

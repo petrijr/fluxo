@@ -84,6 +84,6 @@ MIT (to be confirmed)
 
 ## 🧭 Project Status
 
-Currently in **design phase**.  
+Currently in **MVP implementation**.  
 Community feedback is welcome—open an issue or proposal!
 

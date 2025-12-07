@@ -197,3 +197,138 @@ func TestSignals_WrongSignalNameKeepsWaiting(t *testing.T) {
 		t.Fatalf("expected CurrentStep 0, got %d", resumed.CurrentStep)
 	}
 }
+
+func TestSignals_WaitForAnySignal_ApproveOrReject(t *testing.T) {
+	factories := map[string]signalEngineFactory{
+		"in-memory": signalInMemoryEngine,
+		"sqlite":    signalSQLiteEngine,
+	}
+
+	for name, factory := range factories {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			engine := factory(t)
+
+			// Workflow:
+			//   prepare -> wait-decision (approve/reject) -> finalize
+			wf := api.WorkflowDefinition{
+				Name: "approval-decisions",
+				Steps: []api.StepDefinition{
+					{
+						Name: "prepare",
+						Fn: func(ctx context.Context, input any) (any, error) {
+							return "request-123", nil
+						},
+					},
+					{
+						Name: "wait-decision",
+						Fn:   api.WaitForAnySignalStep("approve", "reject"),
+					},
+					{
+						Name: "finalize",
+						Fn: func(ctx context.Context, input any) (any, error) {
+							sp, ok := input.(api.SignalPayload)
+							if !ok {
+								return nil, errors.New("expected SignalPayload in finalize")
+							}
+							switch sp.Name {
+							case "approve":
+								return "approved:" + sp.Data.(string), nil
+							case "reject":
+								return "rejected:" + sp.Data.(string), nil
+							default:
+								return nil, errors.New("unexpected signal name " + sp.Name)
+							}
+						},
+					},
+				},
+			}
+
+			if err := engine.RegisterWorkflow(wf); err != nil {
+				t.Fatalf("RegisterWorkflow failed: %v", err)
+			}
+
+			// --- Branch 1: approve ---
+			inst, err := engine.Run(ctx, "approval-decisions", nil)
+			if err == nil {
+				t.Fatalf("expected wait-for-signal error for approve branch")
+			}
+			if inst.Status != api.StatusWaiting {
+				t.Fatalf("expected WAITING, got %q", inst.Status)
+			}
+
+			// Send "approve" signal
+			instApproved, err := engine.Signal(ctx, inst.ID, "approve", "Manager-A")
+			if err != nil {
+				t.Fatalf("Signal approve failed: %v", err)
+			}
+			if instApproved.Status != api.StatusCompleted {
+				t.Fatalf("expected COMPLETED on approve branch, got %q", instApproved.Status)
+			}
+			if instApproved.Output != "approved:Manager-A" {
+				t.Fatalf("unexpected output in approve branch: %v", instApproved.Output)
+			}
+
+			// --- Branch 2: reject ---
+			inst2, err := engine.Run(ctx, "approval-decisions", nil)
+			if err == nil {
+				t.Fatalf("expected wait-for-signal error for reject branch")
+			}
+			if inst2.Status != api.StatusWaiting {
+				t.Fatalf("expected WAITING, got %q", inst2.Status)
+			}
+
+			// Send "reject" signal
+			instRejected, err := engine.Signal(ctx, inst2.ID, "reject", "Manager-B")
+			if err != nil {
+				t.Fatalf("Signal reject failed: %v", err)
+			}
+			if instRejected.Status != api.StatusCompleted {
+				t.Fatalf("expected COMPLETED on reject branch, got %q", instRejected.Status)
+			}
+			if instRejected.Output != "rejected:Manager-B" {
+				t.Fatalf("unexpected output in reject branch: %v", instRejected.Output)
+			}
+		})
+	}
+}
+
+func TestSignals_WaitForAnySignal_IgnoresUnexpectedSignal(t *testing.T) {
+	engine := signalInMemoryEngine(t)
+
+	wf := api.WorkflowDefinition{
+		Name: "approval-decisions-unexpected",
+		Steps: []api.StepDefinition{
+			{
+				Name: "wait-decision",
+				Fn:   api.WaitForAnySignalStep("approve", "reject"),
+			},
+		},
+	}
+
+	if err := engine.RegisterWorkflow(wf); err != nil {
+		t.Fatalf("RegisterWorkflow failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	inst, err := engine.Run(ctx, "approval-decisions-unexpected", nil)
+	if err == nil {
+		t.Fatalf("expected wait-for-signal error")
+	}
+	if inst.Status != api.StatusWaiting {
+		t.Fatalf("expected WAITING, got %q", inst.Status)
+	}
+
+	// Send an unexpected signal name; the step should re-request to wait.
+	inst2, err := engine.Signal(ctx, inst.ID, "other-signal", "ignored")
+	if err == nil {
+		t.Fatalf("expected wait-for-signal error again after unexpected signal")
+	}
+	if inst2.Status != api.StatusWaiting {
+		t.Fatalf("expected still WAITING after unexpected signal, got %q", inst2.Status)
+	}
+	if inst2.ID != inst.ID {
+		t.Fatalf("expected same instance ID, got %s vs %s", inst2.ID, inst.ID)
+	}
+}
