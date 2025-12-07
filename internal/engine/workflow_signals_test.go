@@ -149,6 +149,7 @@ func TestSignals_CannotSignalNonWaitingInstance(t *testing.T) {
 	}
 }
 
+//goland:noinspection GoDfaErrorMayBeNotNil
 func TestSignals_WrongSignalNameKeepsWaiting(t *testing.T) {
 	engine := signalInMemoryEngine(t)
 
