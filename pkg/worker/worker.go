@@ -2,12 +2,17 @@ package worker
 
 import (
 	"context"
+	"encoding/gob"
 	"errors"
 	"time"
 
 	"github.com/petrijr/fluxo/internal/taskqueue"
 	"github.com/petrijr/fluxo/pkg/api"
 )
+
+func init() {
+	gob.Register(StartWorkflowPayload{})
+}
 
 // StartWorkflowPayload is the payload for a "start-workflow" task.
 type StartWorkflowPayload struct {
@@ -43,6 +48,51 @@ func (w *Worker) EnqueueStartWorkflow(ctx context.Context, workflowName string, 
 	return w.queue.Enqueue(ctx, t)
 }
 
+// EnqueueStartWorkflowAt enqueues a task to start a workflow no earlier than
+// the given time 'at'.
+func (w *Worker) EnqueueStartWorkflowAt(ctx context.Context, workflowName string, input any, at time.Time) error {
+	t := taskqueue.Task{
+		ID:           "",
+		Type:         taskqueue.TaskTypeStartWorkflow,
+		WorkflowName: workflowName,
+		Payload: StartWorkflowPayload{
+			Input: input,
+		},
+		EnqueuedAt: time.Now(),
+		NotBefore:  at,
+	}
+	return w.queue.Enqueue(ctx, t)
+}
+
+// EnqueueSignal enqueues a task to deliver a signal to a waiting workflow
+// instance. The signal will be processed asynchronously by ProcessOne.
+func (w *Worker) EnqueueSignal(ctx context.Context, instanceID string, name string, payload any) error {
+	t := taskqueue.Task{
+		ID:         "", // can be filled with a UUID later if desired
+		Type:       taskqueue.TaskTypeSignal,
+		InstanceID: instanceID,
+		SignalName: name,
+		Payload:    payload,
+		EnqueuedAt: time.Now(),
+	}
+	return w.queue.Enqueue(ctx, t)
+}
+
+// EnqueueSignalAt enqueues a signal task that will be delivered to the
+// target instance no earlier than 'at'.
+func (w *Worker) EnqueueSignalAt(ctx context.Context, instanceID string, name string, payload any, at time.Time) error {
+	t := taskqueue.Task{
+		ID:         "",
+		Type:       taskqueue.TaskTypeSignal,
+		InstanceID: instanceID,
+		SignalName: name,
+		Payload:    payload,
+		EnqueuedAt: time.Now(),
+		NotBefore:  at,
+	}
+	return w.queue.Enqueue(ctx, t)
+}
+
 // ProcessOne pulls a single task from the queue and processes it.
 // Returns (processed, error):
 //   - processed == false, err == nil: no task processed (only happens if ctx cancelled before a task was obtained)
@@ -68,6 +118,12 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 		}
 		_, runErr := w.engine.Run(ctx, task.WorkflowName, payload.Input)
 		return true, runErr
+
+	case taskqueue.TaskTypeSignal:
+		// Payload is passed directly to engine.Signal.
+		_, sigErr := w.engine.Signal(ctx, task.InstanceID, task.SignalName, task.Payload)
+		return true, sigErr
+
 	default:
 		// Unknown task type; mark as processed but return an error so this isn't silently ignored.
 		return true, errors.New("unknown task type: " + string(task.Type))

@@ -10,16 +10,32 @@ type TaskType string
 
 const (
 	TaskTypeStartWorkflow TaskType = "start-workflow"
+	TaskTypeSignal        TaskType = "signal"
 )
 
 // Task represents a unit of work for the worker.
 // First iteration: only "start workflow" tasks.
 type Task struct {
-	ID           string
-	Type         TaskType
+	ID   string
+	Type TaskType
+
+	// For start-workflow tasks
 	WorkflowName string
-	Payload      any
-	EnqueuedAt   time.Time
+
+	// For signal tasks
+	InstanceID string
+	SignalName string
+
+	// Payload is task-type specific:
+	//   - start-workflow: StartWorkflowPayload
+	//   - signal: arbitrary payload to pass to engine.Signal
+	Payload any
+
+	EnqueuedAt time.Time
+
+	// NotBefore is the earliest time this task should be eligible
+	// for processing. Zero value means "immediately" (i.e., at enqueue time).
+	NotBefore time.Time
 }
 
 // Queue is a simple async task queue interface.
