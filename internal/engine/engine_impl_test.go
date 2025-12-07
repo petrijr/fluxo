@@ -28,7 +28,7 @@ func TestSequentialWorkflowCompletes(t *testing.T) {
 	engine := NewInMemoryEngine()
 
 	wf := api.WorkflowDefinition{
-		Name: "onboarding",
+		Name: "approval",
 		Steps: []api.StepDefinition{
 			{
 				Name: "create-user",
@@ -63,7 +63,7 @@ func TestSequentialWorkflowCompletes(t *testing.T) {
 		t.Fatalf("RegisterWorkflow failed: %v", err)
 	}
 
-	inst, err := engine.Run(ctx, "onboarding", OnboardingInput{Email: "alice@example.com"})
+	inst, err := engine.Run(ctx, "approval", OnboardingInput{Email: "alice@example.com"})
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
