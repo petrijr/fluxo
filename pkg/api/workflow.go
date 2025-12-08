@@ -400,14 +400,15 @@ func StartChildrenStep(specsFn func(input any) ([]ChildWorkflowSpec, error)) Ste
 // getIDs extracts the child instance IDs from the input (for example, from
 // the []string returned by StartChildrenStep).
 //
-// The first implementation is "semi-durable":
-//   - It polls the engine for child status until all are COMPLETED or one
-//     FAILs.
-//   - If the process crashes, replay will re-run this step, see that some or
-//     all children are already done, and complete quickly.
-//
-// pollInterval controls how often to poll child statuses; if <= 0, a
-// default of 500ms is used.
+// Durable semantics:
+//   - Each invocation checks child states exactly once.
+//   - If some children are still running/pending, the step returns a
+//     WaitForChildrenError with a suggested PollAfter duration.
+//   - The engine must treat WaitForChildrenError like a "WAITING" signal:
+//     mark the instance as WAITING and schedule a resume after PollAfter.
+//   - When the workflow is resumed, this step is re-invoked with the same
+//     input, re-checks statuses, and eventually returns the children outputs
+//     once all are completed.
 func WaitForChildrenStep(
 	getIDs func(input any) []string,
 	pollInterval time.Duration,
@@ -431,40 +432,38 @@ func WaitForChildrenStep(
 			return []any{}, nil
 		}
 
-		for {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
+		// Single poll pass: either we have all results, or we ask the engine
+		// to park and recheck later.
+		allDone := true
+		outputs := make([]any, len(ids))
+
+		for i, id := range ids {
+			inst, err := engine.GetInstance(ctx, id)
+			if err != nil {
+				return nil, fmt.Errorf("WaitForChildrenStep: GetInstance(%q) failed: %w", id, err)
+			}
+
+			switch inst.Status {
+			case StatusCompleted:
+				outputs[i] = inst.Output
+			case StatusFailed:
+				if inst.Err != nil {
+					return nil, fmt.Errorf("WaitForChildrenStep: child %s failed: %w", id, inst.Err)
+				}
+				return nil, fmt.Errorf("WaitForChildrenStep: child %s failed", id)
 			default:
+				allDone = false
 			}
+		}
 
-			allDone := true
-			outputs := make([]any, len(ids))
+		if allDone {
+			return outputs, nil
+		}
 
-			for i, id := range ids {
-				inst, err := engine.GetInstance(ctx, id)
-				if err != nil {
-					return nil, fmt.Errorf("WaitForChildrenStep: GetInstance(%q) failed: %w", id, err)
-				}
-
-				switch inst.Status {
-				case StatusCompleted:
-					outputs[i] = inst.Output
-				case StatusFailed:
-					if inst.Err != nil {
-						return nil, fmt.Errorf("WaitForChildrenStep: child %s failed: %w", id, inst.Err)
-					}
-					return nil, fmt.Errorf("WaitForChildrenStep: child %s failed", id)
-				default:
-					allDone = false
-				}
-			}
-
-			if allDone {
-				return outputs, nil
-			}
-
-			time.Sleep(pollInterval)
+		// Not all children are finished yet – ask the engine to park & reschedule.
+		return nil, &WaitForChildrenError{
+			ChildIDs:  ids,
+			PollAfter: pollInterval,
 		}
 	}
 }
@@ -564,6 +563,20 @@ func IsWaitForSignalError(err error) (string, bool) {
 		return w.Name, true
 	}
 	return "", false
+}
+
+// WaitForChildrenError is a sentinel error used by WaitForChildrenStep to
+// tell the engine that the parent workflow should be parked (WAITING) and
+// resumed later to re-check the child statuses.
+//
+// The engine is responsible for scheduling a resume after PollAfter.
+type WaitForChildrenError struct {
+	ChildIDs  []string
+	PollAfter time.Duration
+}
+
+func (e *WaitForChildrenError) Error() string {
+	return fmt.Sprintf("waiting for %d child workflows", len(e.ChildIDs))
 }
 
 // Engine is the high-level engine API (iteration 1: synchronous).

@@ -1,0 +1,142 @@
+package taskqueue
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"time"
+)
+
+// PostgresQueue implements Queue using a PostgreSQL table.
+//
+// Schema (created automatically if missing):
+//
+//	CREATE TABLE IF NOT EXISTS queue_tasks (
+//	    id          TEXT PRIMARY KEY,
+//	    payload     BYTEA NOT NULL,
+//	    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+//	);
+//
+// The queue is FIFO by created_at.
+type PostgresQueue struct {
+	db *sql.DB
+}
+
+// NewPostgresQueue creates the required schema if needed and returns a Queue.
+func NewPostgresQueue(db *sql.DB) (*PostgresQueue, error) {
+	q := &PostgresQueue{db: db}
+	if err := q.initSchema(); err != nil {
+		return nil, err
+	}
+	return q, nil
+}
+
+// Ensure PostgresQueue implements Queue.
+var _ Queue = (*PostgresQueue)(nil)
+
+func (q *PostgresQueue) initSchema() error {
+	_, err := q.db.Exec(`
+		CREATE TABLE IF NOT EXISTS queue_tasks (
+			id         TEXT PRIMARY KEY,
+			payload    BYTEA NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+	`)
+	return err
+}
+
+// Enqueue inserts a task into the queue.
+func (q *PostgresQueue) Enqueue(ctx context.Context, t Task) error {
+	data, err := encodeTask(t)
+	if err != nil {
+		return err
+	}
+
+	// We rely on Task having a stable ID if needed, but the queue itself
+	// doesn’t care about the semantics of ID beyond uniqueness.
+	_, err = q.db.ExecContext(ctx, `
+		INSERT INTO queue_tasks (id, payload)
+		VALUES ($1, $2)
+	`, t.ID, data)
+	return err
+}
+
+// Dequeue blocks (with polling) until a task is available or ctx is cancelled.
+//
+// Implementation notes:
+//   - Uses SELECT ... FOR UPDATE SKIP LOCKED in a transaction to safely claim
+//     a single row, then DELETEs it in the same transaction.
+//   - If no rows are available, sleeps briefly and retries, checking ctx.
+func (q *PostgresQueue) Dequeue(ctx context.Context) (*Task, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		tx, err := q.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		var (
+			id      string
+			payload []byte
+		)
+
+		// Lock a single oldest row, if any.
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, payload
+			FROM queue_tasks
+			ORDER BY created_at
+			FOR UPDATE SKIP LOCKED
+			LIMIT 1
+		`).Scan(&id, &payload)
+
+		if err != nil {
+			_ = tx.Rollback()
+			if err == sql.ErrNoRows {
+				// Nothing available yet – wait a bit and retry.
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(100 * time.Millisecond):
+					continue
+				}
+			}
+			return nil, err
+		}
+
+		// Delete the claimed row within the same transaction.
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM queue_tasks
+			WHERE id = $1
+		`, id); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+
+		task, err := decodeTask(payload)
+		if err != nil {
+			return nil, fmt.Errorf("decode task %q failed: %w", id, err)
+		}
+		// If Task has an ID field, it should already be set as part of the gob payload.
+		return task, nil
+	}
+}
+
+// Len returns an approximate number of queued tasks.
+func (q *PostgresQueue) Len() int {
+	var n int
+	if err := q.db.QueryRow(`SELECT COUNT(*) FROM queue_tasks`).Scan(&n); err != nil {
+		log.Printf("PostgresQueue: Len failed: %v", err)
+		return 0
+	}
+	return n
+}

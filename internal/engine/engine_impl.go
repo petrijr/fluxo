@@ -10,6 +10,7 @@ import (
 
 	"github.com/petrijr/fluxo/internal/persistence"
 	"github.com/petrijr/fluxo/pkg/api"
+	"github.com/redis/go-redis/v9"
 )
 
 // engineImpl is a simple, synchronous, in-process engine implementation.
@@ -41,6 +42,35 @@ func NewSQLiteEngine(db *sql.DB) (api.Engine, error) {
 		Workflows: memWF,
 		Instances: inst,
 	}), nil
+}
+
+func NewPostgresEngine(db *sql.DB) (api.Engine, error) {
+	inst, err := persistence.NewPostgresInstanceStore(db)
+	if err != nil {
+		return nil, err
+	}
+	// For now, workflow definitions remain in-memory, just like SQLite.
+	memWF := persistence.NewInMemoryStore()
+
+	return NewEngine(persistence.Persistence{
+		Workflows: memWF,
+		Instances: inst,
+	}), nil
+}
+
+// NewRedisEngine creates an engine that uses Redis for instance persistence
+// and task queue (if your engine wiring supports pluggable queues).
+func NewRedisEngine(client *redis.Client) api.Engine {
+	instStore := persistence.NewRedisInstanceStore(client, "fluxo:")
+	memWF := persistence.NewInMemoryStore()
+
+	// If your engine has a way to pass the queue in, hook it up here.
+	// For now, we only swap Instances and keep the same queue as before,
+	// unless you already have queue pluggability wired.
+	return NewEngine(persistence.Persistence{
+		Workflows: memWF,
+		Instances: instStore,
+	})
 }
 
 // NewEngine returns an Engine backed by an in-memory registry and
@@ -250,6 +280,15 @@ func (e *engineImpl) executeSteps(
 				inst.Status = api.StatusWaiting
 				inst.Err = nil
 				// We could track sigName somewhere later if needed.
+				_ = e.instances.UpdateInstance(inst)
+				return inst, err
+			}
+
+			// NEW: wait-for-children special case (durable join)
+			var waitChildren *api.WaitForChildrenError
+			if errors.As(err, &waitChildren) {
+				inst.Status = api.StatusWaiting
+				inst.Err = nil
 				_ = e.instances.UpdateInstance(inst)
 				return inst, err
 			}
