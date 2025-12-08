@@ -79,7 +79,6 @@ system that can be embedded directly into Go services without external dependenc
 
 ### Reliability
 
-- Event sourcing + snapshotting for persistence.
 - Crash-safe state transitions.
 
 ### Security
@@ -129,6 +128,9 @@ system that can be embedded directly into Go services without external dependenc
 - Kafka, NATS, Redis Streams, RabbitMQ step triggers
 - gRPC / HTTP step invocation
 - Terraform provider for infrastructure
+
+## 3.7 Improved reliability
+- Event sourcing + snapshotting for persistence.
 
 ---
 

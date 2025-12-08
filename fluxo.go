@@ -84,3 +84,12 @@ func Resume(ctx context.Context, eng Engine, id string) (*WorkflowInstance, erro
 func Signal(ctx context.Context, eng Engine, id string, name string, payload any) (*WorkflowInstance, error) {
 	return eng.Signal(ctx, id, name, payload)
 }
+
+// RecoverStuckInstances delegates to eng.RecoverStuckInstances.
+//
+// It is typically called on process startup before starting any workers:
+//
+//	count, err := fluxo.RecoverStuckInstances(ctx, engine)
+func RecoverStuckInstances(ctx context.Context, eng Engine) (int, error) {
+	return eng.RecoverStuckInstances(ctx)
+}

@@ -46,6 +46,10 @@ func (f *fakeEngine) Signal(ctx context.Context, id string, name string, payload
 	panic("Signal should not be called in fakeEngine")
 }
 
+func (f *fakeEngine) RecoverStuckInstances(ctx context.Context) (int, error) {
+	panic("RecoverStuckInstances should not be called in fakeEngine")
+}
+
 func TestWaitForAnyChildStep_ReturnsFirstCompletedChildID(t *testing.T) {
 	// Arrange: three children, only one is completed.
 	childIDs := []string{"child-1", "child-2", "child-3"}

@@ -244,6 +244,35 @@ func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload
 	return e.executeSteps(ctx, def, inst, inst.CurrentStep, inst.Input)
 }
 
+func (e *engineImpl) RecoverStuckInstances(ctx context.Context) (int, error) {
+	// We treat any instance that is still StatusRunning as "stuck".
+	// This should be safe if called on startup before any workers are
+	// processing tasks, because nothing should be actively running then.
+	instances, err := e.instances.ListInstances(persistence.InstanceFilter{
+		Status: api.StatusRunning})
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, inst := range instances {
+		// Sanity check; defensive only.
+		if inst.Status != api.StatusRunning {
+			continue
+		}
+
+		inst.Status = api.StatusFailed
+		inst.Err = fmt.Errorf("workflow engine recovered stuck running instance after crash")
+
+		if err := e.instances.UpdateInstance(inst); err != nil {
+			return count, err
+		}
+		count++
+	}
+
+	return count, nil
+}
+
 func (e *engineImpl) nextInstanceID() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -738,6 +738,17 @@ type Engine interface {
 	// Signal delivers a named signal to a waiting workflow instance and
 	// resumes it from the step that requested the signal.
 	Signal(ctx context.Context, id string, name string, payload any) (*WorkflowInstance, error)
+
+	// RecoverStuckInstances scans for in-flight workflow instances that are
+	// still marked as StatusRunning (for example after a process crash) and
+	// marks them as StatusFailed with a standard error message.
+	//
+	// It returns the number of instances it updated.
+	//
+	// This method is intended to be called on process startup *before*
+	// starting workers or accepting new work, so that no instance is
+	// legitimately running when it is executed.
+	RecoverStuckInstances(ctx context.Context) (int, error)
 }
 
 // --- Child workflow support & engine-in-context helpers --- //
