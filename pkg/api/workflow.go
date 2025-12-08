@@ -26,6 +26,12 @@ const (
 	StatusWaiting   Status = "WAITING"
 )
 
+type ParallelResult struct {
+	Index int
+	Value any
+	Err   error
+}
+
 // StepFunc is a single step in a workflow.
 // Iteration 1: keep it simple with `any`, we can add generics later.
 type StepFunc func(ctx context.Context, input any) (any, error)
@@ -144,7 +150,7 @@ func WaitForAnySignalStep(names ...string) StepFunc {
 }
 
 // IfStep returns a step that evaluates cond on the input and, depending
-// on the result, runs thenStep or elseStep.
+// on the ParallelResult, runs thenStep or elseStep.
 //
 // The selected branch is executed as a nested step (i.e. the engine only
 // sees this as a single step); retries/backoff for this step apply to the
@@ -208,8 +214,8 @@ func SwitchStep(selector SelectorFunc, branches map[string]StepFunc, defaultStep
 // and collects their outputs.
 //
 // Semantics:
-//   - All non-nil child steps receive the same input value.
-//   - The result is a []any whose length equals len(steps), preserving order.
+//   - All non-nil child steps receive the same input Value.
+//   - The ParallelResult is a []any whose length equals len(steps), preserving order.
 //   - If any child step returns an error, the *first* error is returned and
 //     no further processing is done after all goroutines finish.
 //   - If ctx is cancelled, ctx.Err() is returned.
@@ -220,17 +226,11 @@ func SwitchStep(selector SelectorFunc, branches map[string]StepFunc, defaultStep
 func ParallelStep(steps ...StepFunc) StepFunc {
 	return func(ctx context.Context, input any) (any, error) {
 		if len(steps) == 0 {
-			// Nothing to do, just pass the value through.
+			// Nothing to do, just pass the Value through.
 			return input, nil
 		}
 
-		type result struct {
-			index int
-			value any
-			err   error
-		}
-
-		results := make([]any, len(steps))
+		results := make([]ParallelResult, len(steps))
 		var wg sync.WaitGroup
 		var firstErr error
 		var errOnce sync.Once
@@ -240,7 +240,11 @@ func ParallelStep(steps ...StepFunc) StepFunc {
 
 			if step == nil {
 				// Treat nil child step as a no-op that passes the input through.
-				results[i] = input
+				results[i] = ParallelResult{
+					Index: i,
+					Value: input,
+					Err:   nil,
+				}
 				continue
 			}
 
@@ -265,7 +269,11 @@ func ParallelStep(steps ...StepFunc) StepFunc {
 					})
 					return
 				}
-				results[i] = out
+				results[i] = ParallelResult{
+					Index: i,
+					Value: out,
+					Err:   nil,
+				}
 			}()
 		}
 
@@ -283,7 +291,7 @@ func ParallelStep(steps ...StepFunc) StepFunc {
 // array and runs fn in parallel for each element.
 //
 // Input:
-//   - A slice or array value (e.g. []T).
+//   - A slice or array Value (e.g. []T).
 //
 // Behavior:
 //   - For each element input[i], fn(ctx, input[i]) is executed in its own goroutine.
@@ -468,6 +476,100 @@ func WaitForChildrenStep(
 	}
 }
 
+// WaitForAnyChildError signals that the workflow should pause until
+// one of the given child workflows has completed.
+type WaitForAnyChildError struct {
+	ChildIDs  []string
+	PollAfter time.Duration
+}
+
+func (e *WaitForAnyChildError) Error() string {
+	return "waiting for any child workflow to complete"
+}
+
+// IsWaitForAnyChildError returns true if the error is WaitForAnyChildError.
+func IsWaitForAnyChildError(err error) bool {
+	var waitForAnyChildError *WaitForAnyChildError
+	ok := errors.As(err, &waitForAnyChildError)
+	return ok
+}
+
+// WaitForAnyChildStep waits until any one of the specified child workflow
+// instances has reached a terminal state.
+//
+// getIDs extracts the child instance IDs from the input (for example, from
+// the []string returned by StartChildrenStep).
+//
+// Semantics:
+//   - If getIDs(input) returns an empty slice, the step returns (nil, nil).
+//   - If any child is StatusFailed, the step returns a hard error describing
+//     the failure (not a WaitForAnyChildError).
+//   - If any child is StatusCompleted, the step returns that child ID as output.
+//     The "first" completed child is determined by the order of IDs returned
+//     by getIDs.
+//   - If no child is terminal yet (all are PENDING/RUNNING/etc.), the step
+//     returns a *WaitForAnyChildError with the IDs and PollAfter interval.
+//     The engine should treat this as a request to park the workflow and
+//     resume it later.
+func WaitForAnyChildStep(
+	getIDs func(input any) []string,
+	pollInterval time.Duration,
+) StepFunc {
+	if pollInterval <= 0 {
+		pollInterval = 500 * time.Millisecond
+	}
+
+	return func(ctx context.Context, input any) (any, error) {
+		if getIDs == nil {
+			return nil, errors.New("WaitForAnyChildStep: getIDs must not be nil")
+		}
+
+		engine := EngineFromContext(ctx)
+		if engine == nil {
+			return nil, errors.New("WaitForAnyChildStep: engine not available in context")
+		}
+
+		ids := getIDs(input)
+		if len(ids) == 0 {
+			// Degenerate case: nothing to wait for.
+			// Tests expect nil output here.
+			return nil, nil
+		}
+
+		// Single poll pass: if we find any completed child, return its ID.
+		// If we find a failed child, return an error.
+		// Otherwise, ask the engine to park and re-check later.
+		for _, id := range ids {
+			inst, err := engine.GetInstance(ctx, id)
+			if err != nil {
+				return nil, fmt.Errorf("WaitForAnyChildStep: GetInstance(%q) failed: %w", id, err)
+			}
+
+			switch inst.Status {
+			case StatusCompleted:
+				// First completed child wins.
+				return id, nil
+
+			case StatusFailed:
+				// Hard failure — do not park.
+				if inst.Err != nil {
+					return nil, fmt.Errorf("WaitForAnyChildStep: child %s failed: %w", id, inst.Err)
+				}
+				return nil, fmt.Errorf("WaitForAnyChildStep: child %s failed", id)
+
+			default:
+				// Still running/pending/waiting – keep scanning others.
+			}
+		}
+
+		// None are terminal yet – ask the engine to park & re-schedule.
+		return nil, &WaitForAnyChildError{
+			ChildIDs:  ids,
+			PollAfter: pollInterval,
+		}
+	}
+}
+
 // StepDefinition describes a named step.
 type StepDefinition struct {
 	Name  string
@@ -481,7 +583,7 @@ type WorkflowDefinition struct {
 	Steps []StepDefinition
 }
 
-// WorkflowInstance holds the result of a run.
+// WorkflowInstance holds the ParallelResult of a run.
 type WorkflowInstance struct {
 	ID     string
 	Name   string
@@ -498,7 +600,7 @@ type WorkflowInstance struct {
 	//   - Before any steps run: 0 (default)
 	//   - While running step i: i
 	//   - After successful completion: len(steps)
-	//   - On failure: index of the step that failed (or was cancelled).
+	//   - On failure: Index of the step that failed (or was cancelled).
 	CurrentStep int
 }
 
@@ -555,7 +657,7 @@ func NewWaitForSignalError(name string) error {
 	return &waitForSignalError{Name: name}
 }
 
-// IsWaitForSignalError returns (signalName, true) if err indicates that
+// IsWaitForSignalError returns (signalName, true) if Err indicates that
 // the step wants to wait for a signal.
 func IsWaitForSignalError(err error) (string, bool) {
 	var w *waitForSignalError
@@ -641,4 +743,19 @@ func EngineFromContext(ctx context.Context) Engine {
 		}
 	}
 	return nil
+}
+
+// key type avoids collisions
+type instanceCtxKey struct{}
+
+func ContextWithInstance(ctx context.Context, inst *WorkflowInstance) context.Context {
+	return context.WithValue(ctx, instanceCtxKey{}, inst)
+}
+
+func InstanceFromContext(ctx context.Context) *WorkflowInstance {
+	val := ctx.Value(instanceCtxKey{})
+	if val == nil {
+		return nil
+	}
+	return val.(*WorkflowInstance)
 }

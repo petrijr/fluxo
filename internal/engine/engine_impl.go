@@ -293,6 +293,13 @@ func (e *engineImpl) executeSteps(
 				return inst, err
 			}
 
+			if api.IsWaitForAnyChildError(err) {
+				inst.Status = api.StatusWaiting
+				inst.Err = nil
+				_ = e.instances.UpdateInstance(inst)
+				return inst, err
+			}
+
 			lastErr = err
 
 			// If this was the last allowed attempt, mark failed.

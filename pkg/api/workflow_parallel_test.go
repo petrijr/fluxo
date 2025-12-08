@@ -27,9 +27,9 @@ func TestParallelStep_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	values, ok := out.([]any)
+	values, ok := out.([]ParallelResult)
 	if !ok {
-		t.Fatalf("expected []any output, got %T", out)
+		t.Fatalf("expected []ParallelResult output, got %T", out)
 	}
 	if len(values) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(values))
@@ -37,9 +37,9 @@ func TestParallelStep_Success(t *testing.T) {
 
 	want := []int{11, 12, 13}
 	for i, v := range values {
-		got := v.(int)
+		got := v.Value.(int)
 		if got != want[i] {
-			t.Fatalf("index %d: expected %d, got %d", i, want[i], got)
+			t.Fatalf("Index %d: expected %d, got %d", i, want[i], got)
 		}
 	}
 }
@@ -89,7 +89,7 @@ func TestParallelMapStep_Success(t *testing.T) {
 	for i, v := range values {
 		got := v.(int)
 		if got != want[i] {
-			t.Fatalf("index %d: expected %d, got %d", i, want[i], got)
+			t.Fatalf("Index %d: expected %d, got %d", i, want[i], got)
 		}
 	}
 }

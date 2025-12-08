@@ -23,12 +23,12 @@ func TestIfStepBranchesCorrectly(t *testing.T) {
 
 	out, err := step(ctx, 1)
 	if err != nil || out.(string) != "then" {
-		t.Fatalf("expected then branch, got %v, err=%v", out, err)
+		t.Fatalf("expected then branch, got %v, Err=%v", out, err)
 	}
 
 	out, err = step(ctx, -1)
 	if err != nil || out.(string) != "else" {
-		t.Fatalf("expected else branch, got %v, err=%v", out, err)
+		t.Fatalf("expected else branch, got %v, Err=%v", out, err)
 	}
 }
 
