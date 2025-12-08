@@ -18,8 +18,16 @@ type engineImpl struct {
 	workflows persistence.WorkflowStore
 	instances persistence.InstanceStore
 
-	mu     sync.Mutex // only for nextID
-	nextID int64
+	mu       sync.Mutex // only for nextID
+	nextID   int64
+	observer api.Observer
+}
+
+// Config describes how to construct an engineImpl.
+// Only used inside this package; external callers use the helper functions.
+type Config struct {
+	Persistence persistence.Persistence
+	Observer    api.Observer
 }
 
 func NewInMemoryEngine() api.Engine {
@@ -73,13 +81,25 @@ func NewRedisEngine(client *redis.Client) api.Engine {
 	})
 }
 
+// NewEngineWithConfig creates a new Engine using the given configuration.
+func NewEngineWithConfig(cfg Config) api.Engine {
+	obs := cfg.Observer
+	if obs == nil {
+		obs = api.NoopObserver{}
+	}
+	return &engineImpl{
+		workflows: cfg.Persistence.Workflows,
+		instances: cfg.Persistence.Instances,
+		observer:  obs,
+	}
+}
+
 // NewEngine returns an Engine backed by an in-memory registry and
 // an in-memory persistence store. External users access this via fluxo.NewInMemoryEngine.
 func NewEngine(p persistence.Persistence) api.Engine {
-	return &engineImpl{
-		workflows: p.Workflows,
-		instances: p.Instances,
-	}
+	return NewEngineWithConfig(Config{
+		Persistence: p,
+	})
 }
 
 func (e *engineImpl) RegisterWorkflow(def api.WorkflowDefinition) error {
@@ -118,10 +138,15 @@ func (e *engineImpl) Run(ctx context.Context, name string, input any) (*api.Work
 		CurrentStep: 0,
 	}
 
+	// Notify observer that the instance has started.
+	e.observer.OnWorkflowStart(ctx, inst)
+
 	// Persist the instance as soon as it starts.
 	if err := e.instances.SaveInstance(inst); err != nil {
 		inst.Status = api.StatusFailed
 		inst.Err = err
+		// Saving failed – treat this as a workflow failure.
+		e.observer.OnWorkflowFailed(ctx, inst, err)
 		return inst, err
 	}
 
@@ -258,6 +283,7 @@ func (e *engineImpl) executeSteps(
 				inst.Status = api.StatusFailed
 				inst.Err = ctx.Err()
 				_ = e.instances.UpdateInstance(inst)
+				e.observer.OnWorkflowFailed(ctx, inst, ctx.Err())
 				return inst, ctx.Err()
 			default:
 			}
@@ -267,7 +293,15 @@ func (e *engineImpl) executeSteps(
 			// can use api.EngineFromContext(ctx).
 			stepCtx := api.WithEngine(ctx, e)
 
+			startTime := time.Now()
+			e.observer.OnStepStart(stepCtx, inst, step.Name, i)
+
+			// Execute step
 			next, err := step.Fn(stepCtx, current)
+
+			duration := time.Since(startTime)
+			e.observer.OnStepCompleted(stepCtx, inst, step.Name, i, err, duration)
+
 			if err == nil {
 				// Success: advance to next step with new value.
 				current = next
@@ -307,6 +341,7 @@ func (e *engineImpl) executeSteps(
 				inst.Status = api.StatusFailed
 				inst.Err = lastErr
 				_ = e.instances.UpdateInstance(inst)
+				e.observer.OnWorkflowFailed(ctx, inst, lastErr)
 				return inst, lastErr
 			}
 
@@ -329,6 +364,8 @@ func (e *engineImpl) executeSteps(
 	inst.Output = current
 	inst.CurrentStep = len(def.Steps)
 	_ = e.instances.UpdateInstance(inst)
+
+	e.observer.OnWorkflowCompleted(ctx, inst)
 
 	return inst, nil
 }
