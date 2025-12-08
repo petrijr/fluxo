@@ -259,6 +259,7 @@ func (e *engineImpl) executeSteps(
 ) (*api.WorkflowInstance, error) {
 	current := input
 
+	// Iterate through all steps
 	for i := startIndex; i < len(def.Steps); i++ {
 		step := def.Steps[i]
 
@@ -267,12 +268,33 @@ func (e *engineImpl) executeSteps(
 
 		// Determine max attempts for this step.
 		maxAttempts := 1
-		var backoff time.Duration
+		var (
+			backoff    time.Duration // current backoff value
+			maxBackoff time.Duration
+			multiplier float64
+		)
+
 		if step.Retry != nil {
 			if step.Retry.MaxAttempts > 0 {
 				maxAttempts = step.Retry.MaxAttempts
 			}
-			backoff = step.Retry.Backoff
+			// Determine initial backoff:
+			//   1) Prefer InitialBackoff if set.
+			//   2) Fall back to deprecated Backoff.
+			backoff = step.Retry.InitialBackoff
+			if backoff <= 0 {
+				backoff = step.Retry.Backoff
+			}
+
+			maxBackoff = step.Retry.MaxBackoff
+
+			// Backoff multiplier:
+			//   - If explicitly set to > 0, use it.
+			//   - Otherwise default to 2.0 (standard exponential backoff).
+			multiplier = step.Retry.BackoffMultiplier
+			if multiplier <= 0 {
+				multiplier = 2.0
+			}
 		}
 
 		var lastErr error
@@ -347,14 +369,30 @@ func (e *engineImpl) executeSteps(
 
 			// Wait before next attempt, if backoff is configured.
 			if backoff > 0 {
+				// Apply per-attempt delay with optional cap.
+				delay := backoff
+				if maxBackoff > 0 && delay > maxBackoff {
+					delay = maxBackoff
+				}
+
 				select {
 				case <-ctx.Done():
 					inst.Status = api.StatusFailed
 					inst.Err = ctx.Err()
 					_ = e.instances.UpdateInstance(inst)
 					return inst, ctx.Err()
-				case <-time.After(backoff):
+				case <-time.After(delay):
 					// continue to next attempt
+				}
+
+				// Increase backoff for the next retry.
+				if multiplier > 0 {
+					nextBackoff := time.Duration(float64(backoff) * multiplier)
+					if maxBackoff > 0 && nextBackoff > maxBackoff {
+						backoff = maxBackoff
+					} else {
+						backoff = nextBackoff
+					}
 				}
 			}
 		}

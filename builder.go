@@ -81,6 +81,12 @@ func (b *FlowBuilder) StepWithRetry(name string, fn StepFunc, retry RetryPolicy)
 	return b
 }
 
+// StepWithRetryBuilder is a convenience wrapper around StepWithRetry that
+// accepts a RetryBuilder.
+func (b *FlowBuilder) StepWithRetryBuilder(name string, fn StepFunc, rb RetryBuilder) *FlowBuilder {
+	return b.StepWithRetry(name, fn, rb.Policy())
+}
+
 // Parallel is a convenience for adding a step that runs sub-steps in parallel.
 func (b *FlowBuilder) Parallel(name string, steps ...StepFunc) *FlowBuilder {
 	return b.Step(name, ParallelStep(steps...))

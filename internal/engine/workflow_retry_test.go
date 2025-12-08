@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -195,5 +196,110 @@ func TestRetryPolicy_DefaultNoRetry(t *testing.T) {
 				t.Fatalf("expected 1 call when no RetryPolicy, got %d", got)
 			}
 		})
+	}
+}
+
+// Test that a step is retried up to MaxAttempts with exponential backoff and
+// eventually succeeds.
+func TestStepRetry_ExponentialBackoff_Succeeds(t *testing.T) {
+	e := NewInMemoryEngine()
+
+	attempts := 0
+
+	def := api.WorkflowDefinition{
+		Name: "retry-exponential-success",
+		Steps: []api.StepDefinition{
+			{
+				Name: "flaky",
+				Retry: &api.RetryPolicy{
+					MaxAttempts:       3,
+					InitialBackoff:    5 * time.Millisecond,
+					BackoffMultiplier: 2.0,
+				},
+				Fn: func(ctx context.Context, input any) (any, error) {
+					attempts++
+					// Fail first two attempts, succeed on third.
+					if attempts < 3 {
+						return nil, errors.New("boom")
+					}
+					return "ok", nil
+				},
+			},
+		},
+	}
+
+	if err := e.RegisterWorkflow(def); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+
+	ctx := context.Background()
+	start := time.Now()
+	inst, err := e.Run(ctx, def.Name, nil)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if inst.Status != api.StatusCompleted {
+		t.Fatalf("expected StatusCompleted, got %s", inst.Status)
+	}
+
+	if attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts)
+	}
+
+	// We expect at least one sleep to have happened (5ms + 10ms).
+	// Use a conservative threshold to avoid flakiness.
+	if elapsed < 5*time.Millisecond {
+		t.Fatalf("expected total runtime to include backoff (>=5ms), got %s", elapsed)
+	}
+}
+
+// Test that the engine stops after MaxAttempts and reports failure.
+func TestStepRetry_ExponentialBackoff_MaxAttemptsReached(t *testing.T) {
+	e := NewInMemoryEngine()
+
+	attempts := 0
+	expectedErr := errors.New("always fails")
+
+	def := api.WorkflowDefinition{
+		Name: "retry-exponential-fail",
+		Steps: []api.StepDefinition{
+			{
+				Name: "always-fail",
+				Retry: &api.RetryPolicy{
+					MaxAttempts:       3,
+					InitialBackoff:    1 * time.Millisecond,
+					BackoffMultiplier: 2.0,
+				},
+				Fn: func(ctx context.Context, input any) (any, error) {
+					attempts++
+					return nil, expectedErr
+				},
+			},
+		},
+	}
+
+	if err := e.RegisterWorkflow(def); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+
+	ctx := context.Background()
+	inst, err := e.Run(ctx, def.Name, nil)
+	if err == nil {
+		t.Fatalf("expected Run to return error, got nil")
+	}
+
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected error %q, got %v", expectedErr, err)
+	}
+
+	if inst.Status != api.StatusFailed {
+		t.Fatalf("expected StatusFailed, got %s", inst.Status)
+	}
+
+	if attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts)
 	}
 }

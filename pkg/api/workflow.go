@@ -26,6 +26,7 @@ const (
 	StatusWaiting   Status = "WAITING"
 )
 
+// ParallelResult represents the out from a parallel step to next step.
 type ParallelResult struct {
 	Index int
 	Value any
@@ -624,7 +625,26 @@ type InstanceListOptions struct {
 // the first attempt. If zero, retries happen immediately.
 type RetryPolicy struct {
 	MaxAttempts int
-	Backoff     time.Duration
+	// Deprecated: prefer InitialBackoff + BackoffMultiplier. If
+	// InitialBackoff is zero and BackoffMultiplier is zero, Backoff
+	// is used as the initial delay between retries.
+	Backoff time.Duration
+
+	// InitialBackoff is the base delay before the first retry.
+	InitialBackoff time.Duration
+
+	// MaxBackoff caps the delay between retries. If zero, there is no cap.
+	MaxBackoff time.Duration
+
+	// BackoffMultiplier is the factor by which the delay grows after each
+	// failed attempt. If <= 0, a default of 2.0 is used.
+	//
+	// Example:
+	//   InitialBackoff = 100ms, BackoffMultiplier = 2.0
+	//   attempt 1 -> 2: sleep 100ms
+	//   attempt 2 -> 3: sleep 200ms
+	//   attempt 3 -> 4: sleep 400ms (capped by MaxBackoff if set)
+	BackoffMultiplier float64
 }
 
 // SignalPayload is used by the engine to resume a workflow step that

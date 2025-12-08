@@ -51,8 +51,6 @@ func newTestMongoStore(t *testing.T, ts *MongoDBStoreTestSuite) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	println(ts.endpoint)
-
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(ts.endpoint))
 	if err != nil {
 		t.Fatalf("mongo.Connect failed: %v", err)
