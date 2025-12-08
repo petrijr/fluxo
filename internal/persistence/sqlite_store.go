@@ -1,9 +1,7 @@
 package persistence
 
 import (
-	"bytes"
 	"database/sql"
-	"encoding/gob"
 	"errors"
 	"strings"
 
@@ -43,6 +41,7 @@ func (s *SQLiteInstanceStore) initSchema() error {
 			current_step INTEGER NOT NULL,
 			input BLOB,
 			output BLOB,
+			step_results BLOB,
 			error TEXT
 		);`,
 	)
@@ -60,20 +59,26 @@ func (s *SQLiteInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 		return err
 	}
 
+	stepResults, err := encodeValue(inst.StepResults)
+	if err != nil {
+		return err
+	}
+
 	errStr := ""
 	if inst.Err != nil {
 		errStr = inst.Err.Error()
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO instances (id, workflow_name, status, current_step, input, output, error)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO instances (id, workflow_name, status, current_step, input, output, step_results, error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		inst.ID,
 		inst.Name,
 		string(inst.Status),
 		inst.CurrentStep,
 		input,
 		output,
+		stepResults,
 		errStr,
 	)
 	return err
@@ -90,6 +95,11 @@ func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 		return err
 	}
 
+	stepResults, err := encodeValue(inst.StepResults)
+	if err != nil {
+		return err
+	}
+
 	errStr := ""
 	if inst.Err != nil {
 		errStr = inst.Err.Error()
@@ -97,13 +107,14 @@ func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 
 	res, err := s.db.Exec(`
 		UPDATE instances
-		SET workflow_name = ?, status = ?, current_step = ?, input = ?, output = ?, error = ?
+		SET workflow_name = ?, status = ?, current_step = ?, input = ?, output = ?, step_results = ?, error = ?
 		WHERE id = ?`,
 		inst.Name,
 		string(inst.Status),
 		inst.CurrentStep,
 		input,
 		output,
+		stepResults,
 		errStr,
 		inst.ID,
 	)
@@ -124,7 +135,7 @@ func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 
 func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
 	row := s.db.QueryRow(`
-		SELECT id, workflow_name, status, current_step, input, output, error
+		SELECT id, workflow_name, status, current_step, input, output, step_results, error
 		FROM instances
 		WHERE id = ?`,
 		id,
@@ -132,11 +143,11 @@ func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, err
 
 	var inst api.WorkflowInstance
 	var statusStr string
-	var input, output []byte
+	var input, output, stepResults []byte
 	var errStr sql.NullString
 	var currentStep int
 
-	if err := row.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &errStr); err != nil {
+	if err := row.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrInstanceNotFound
 		}
@@ -146,17 +157,23 @@ func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, err
 	inst.Status = api.Status(statusStr)
 	inst.CurrentStep = currentStep
 
-	inVal, err := decodeValue(input)
+	inVal, err := decodeValue[any](input)
 	if err != nil {
 		return nil, err
 	}
 	inst.Input = inVal
 
-	outVal, err := decodeValue(output)
+	outVal, err := decodeValue[any](output)
 	if err != nil {
 		return nil, err
 	}
 	inst.Output = outVal
+
+	stepResultsVal, err := decodeValue[map[int]any](stepResults)
+	if err != nil {
+		return nil, err
+	}
+	inst.StepResults = stepResultsVal
 
 	if errStr.Valid && errStr.String != "" {
 		inst.Err = errors.New(errStr.String)
@@ -167,7 +184,7 @@ func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, err
 
 func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.WorkflowInstance, error) {
 	query := `
-		SELECT id, workflow_name, status, input, output, error
+		SELECT id, workflow_name, status, input, output, step_results, error
 		FROM instances`
 	var args []any
 	var clauses []string
@@ -196,26 +213,32 @@ func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Workf
 	for rows.Next() {
 		var inst api.WorkflowInstance
 		var statusStr string
-		var input, output []byte
+		var input, output, stepResults []byte
 		var errStr sql.NullString
 
-		if err := rows.Scan(&inst.ID, &inst.Name, &statusStr, &input, &output, &errStr); err != nil {
+		if err := rows.Scan(&inst.ID, &inst.Name, &statusStr, &input, &output, &stepResults, &errStr); err != nil {
 			return nil, err
 		}
 
 		inst.Status = api.Status(statusStr)
 
-		inVal, err := decodeValue(input)
+		inVal, err := decodeValue[any](input)
 		if err != nil {
 			return nil, err
 		}
 		inst.Input = inVal
 
-		outVal, err := decodeValue(output)
+		outVal, err := decodeValue[any](output)
 		if err != nil {
 			return nil, err
 		}
 		inst.Output = outVal
+
+		stepResultsVal, err := decodeValue[map[int]any](stepResults)
+		if err != nil {
+			return nil, err
+		}
+		inst.StepResults = stepResultsVal
 
 		if errStr.Valid && errStr.String != "" {
 			inst.Err = errors.New(errStr.String)
@@ -231,36 +254,4 @@ func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Workf
 	}
 
 	return instances, nil
-}
-
-// encodeValue serializes arbitrary Go values using encoding/gob.
-// Callers must ensure that values are gob-encodable.
-func encodeValue(v any) ([]byte, error) {
-	if v == nil {
-		return nil, nil
-	}
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-
-	// Important: encode as interface{} so we can safely decode into interface{}.
-	var iv = v
-	if err := enc.Encode(&iv); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-// decodeValue deserializes gob-encoded data back into an `any`.
-func decodeValue(data []byte) (any, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	buf := bytes.NewBuffer(data)
-	dec := gob.NewDecoder(buf)
-
-	var iv any
-	if err := dec.Decode(&iv); err != nil {
-		return nil, err
-	}
-	return iv, nil
 }

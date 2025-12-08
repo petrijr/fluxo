@@ -40,6 +40,7 @@ type mongoInstanceDoc struct {
 	CurrentStep int    `bson:"current_step"`
 	Input       []byte `bson:"input,omitempty"`
 	Output      []byte `bson:"output,omitempty"`
+	StepResults []byte `bson:"step_results,omitempty"`
 	Error       string `bson:"error,omitempty"`
 }
 
@@ -52,6 +53,10 @@ func (s *MongoInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 		return err
 	}
 	outBytes, err := encodeValue(inst.Output)
+	if err != nil {
+		return err
+	}
+	stepResultsBytes, err := encodeValue(inst.StepResults)
 	if err != nil {
 		return err
 	}
@@ -68,6 +73,7 @@ func (s *MongoInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 		CurrentStep: inst.CurrentStep,
 		Input:       inBytes,
 		Output:      outBytes,
+		StepResults: stepResultsBytes,
 		Error:       errStr,
 	}
 
@@ -88,6 +94,10 @@ func (s *MongoInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 	if err != nil {
 		return err
 	}
+	stepResultsBytes, err := encodeValue(inst.StepResults)
+	if err != nil {
+		return err
+	}
 
 	errStr := ""
 	if inst.Err != nil {
@@ -101,6 +111,7 @@ func (s *MongoInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 			"current_step":  inst.CurrentStep,
 			"input":         inBytes,
 			"output":        outBytes,
+			"step_results":  stepResultsBytes,
 			"error":         errStr,
 		},
 	}
@@ -128,11 +139,15 @@ func (s *MongoInstanceStore) GetInstance(id string) (*api.WorkflowInstance, erro
 		return nil, err
 	}
 
-	inVal, err := decodeValue(doc.Input)
+	inVal, err := decodeValue[any](doc.Input)
 	if err != nil {
 		return nil, err
 	}
-	outVal, err := decodeValue(doc.Output)
+	outVal, err := decodeValue[any](doc.Output)
+	if err != nil {
+		return nil, err
+	}
+	stepResultsVal, err := decodeValue[map[int]any](doc.StepResults)
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +159,7 @@ func (s *MongoInstanceStore) GetInstance(id string) (*api.WorkflowInstance, erro
 		CurrentStep: doc.CurrentStep,
 		Input:       inVal,
 		Output:      outVal,
+		StepResults: stepResultsVal,
 	}
 	if doc.Error != "" {
 		inst.Err = errors.New(doc.Error)
@@ -177,11 +193,15 @@ func (s *MongoInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Workfl
 			return nil, err
 		}
 
-		inVal, err := decodeValue(doc.Input)
+		inVal, err := decodeValue[any](doc.Input)
 		if err != nil {
 			return nil, err
 		}
-		outVal, err := decodeValue(doc.Output)
+		outVal, err := decodeValue[any](doc.Output)
+		if err != nil {
+			return nil, err
+		}
+		stepResultsVal, err := decodeValue[map[int]any](doc.StepResults)
 		if err != nil {
 			return nil, err
 		}
@@ -193,6 +213,7 @@ func (s *MongoInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Workfl
 			CurrentStep: doc.CurrentStep,
 			Input:       inVal,
 			Output:      outVal,
+			StepResults: stepResultsVal,
 		}
 		if doc.Error != "" {
 			inst.Err = errors.New(doc.Error)

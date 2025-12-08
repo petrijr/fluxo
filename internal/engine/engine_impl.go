@@ -136,6 +136,7 @@ func (e *engineImpl) Run(ctx context.Context, name string, input any) (*api.Work
 		Status:      api.StatusRunning,
 		Input:       input,
 		CurrentStep: 0,
+		StepResults: make(map[int]any),
 	}
 
 	// Notify observer that the instance has started.
@@ -263,6 +264,17 @@ func (e *engineImpl) executeSteps(
 	for i := startIndex; i < len(def.Steps); i++ {
 		step := def.Steps[i]
 
+		// Idempotency: if we already have a cached result for this step,
+		// skip invoking the step function and reuse the cached value.
+		if inst.StepResults != nil {
+			if cached, ok := inst.StepResults[i]; ok {
+				current = cached
+				inst.CurrentStep = i + 1
+				_ = e.instances.UpdateInstance(inst)
+				continue
+			}
+		}
+
 		inst.CurrentStep = i
 		_ = e.instances.UpdateInstance(inst)
 
@@ -328,6 +340,14 @@ func (e *engineImpl) executeSteps(
 				// Success: advance to next step with new value.
 				current = next
 				lastErr = nil
+
+				// Cache successful result for idempotency.
+				if inst.StepResults == nil {
+					inst.StepResults = make(map[int]any)
+				}
+				inst.StepResults[i] = next
+				_ = e.instances.UpdateInstance(inst)
+
 				break
 			}
 

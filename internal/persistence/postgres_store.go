@@ -44,6 +44,7 @@ func (s *PostgresInstanceStore) initSchema() error {
 			current_step INTEGER NOT NULL,
 			input BYTEA,
 			output BYTEA,
+			step_results BYTEA,
 			error TEXT
 		);
 	`)
@@ -61,14 +62,19 @@ func (s *PostgresInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 		return err
 	}
 
+	stepResults, err := encodeValue(inst.StepResults)
+	if err != nil {
+		return err
+	}
+
 	errStr := ""
 	if inst.Err != nil {
 		errStr = inst.Err.Error()
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO instances (id, workflow_name, status, current_step, input, output, error)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO instances (id, workflow_name, status, current_step, input, output, step_results, error)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`,
 		inst.ID,
 		inst.Name,
@@ -76,6 +82,7 @@ func (s *PostgresInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 		inst.CurrentStep,
 		input,
 		output,
+		stepResults,
 		errStr,
 	)
 	return err
@@ -92,6 +99,11 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 		return err
 	}
 
+	stepResults, err := encodeValue(inst.StepResults)
+	if err != nil {
+		return err
+	}
+
 	errStr := ""
 	if inst.Err != nil {
 		errStr = inst.Err.Error()
@@ -104,14 +116,16 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 		    current_step  = $3,
 		    input         = $4,
 		    output        = $5,
-		    error         = $6
-		WHERE id = $7
+		    step_results  = $6,
+		    error         = $7
+		WHERE id = $8
 	`,
 		inst.Name,
 		string(inst.Status),
 		inst.CurrentStep,
 		input,
 		output,
+		stepResults,
 		errStr,
 		inst.ID,
 	)
@@ -132,7 +146,7 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 
 func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
 	row := s.db.QueryRow(`
-		SELECT id, workflow_name, status, current_step, input, output, error
+		SELECT id, workflow_name, status, current_step, input, output, step_results, error
 		FROM instances
 		WHERE id = $1
 	`,
@@ -141,11 +155,11 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 
 	var inst api.WorkflowInstance
 	var statusStr string
-	var input, output []byte
+	var input, output, stepResults []byte
 	var errStr sql.NullString
 	var currentStep int
 
-	if err := row.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &errStr); err != nil {
+	if err := row.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrInstanceNotFound
 		}
@@ -155,17 +169,23 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 	inst.Status = api.Status(statusStr)
 	inst.CurrentStep = currentStep
 
-	inVal, err := decodeValue(input)
+	inVal, err := decodeValue[any](input)
 	if err != nil {
 		return nil, err
 	}
 	inst.Input = inVal
 
-	outVal, err := decodeValue(output)
+	outVal, err := decodeValue[any](output)
 	if err != nil {
 		return nil, err
 	}
 	inst.Output = outVal
+
+	stepResultsVal, err := decodeValue[map[int]any](stepResults)
+	if err != nil {
+		return nil, err
+	}
+	inst.StepResults = stepResultsVal
 
 	if errStr.Valid && errStr.String != "" {
 		inst.Err = errors.New(errStr.String)
@@ -176,7 +196,7 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 
 func (s *PostgresInstanceStore) ListInstances(filter InstanceFilter) ([]*api.WorkflowInstance, error) {
 	query := `
-		SELECT id, workflow_name, status, current_step, input, output, error
+		SELECT id, workflow_name, status, current_step, input, output, step_results, error
 		FROM instances`
 	var args []any
 	var clauses []string
@@ -205,28 +225,34 @@ func (s *PostgresInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Wor
 	for rows.Next() {
 		var inst api.WorkflowInstance
 		var statusStr string
-		var input, output []byte
+		var input, output, stepResults []byte
 		var errStr sql.NullString
 		var currentStep int
 
-		if err := rows.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &errStr); err != nil {
+		if err := rows.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
 			return nil, err
 		}
 
 		inst.Status = api.Status(statusStr)
 		inst.CurrentStep = currentStep
 
-		inVal, err := decodeValue(input)
+		inVal, err := decodeValue[any](input)
 		if err != nil {
 			return nil, err
 		}
 		inst.Input = inVal
 
-		outVal, err := decodeValue(output)
+		outVal, err := decodeValue[any](output)
 		if err != nil {
 			return nil, err
 		}
 		inst.Output = outVal
+
+		stepResultsVal, err := decodeValue[map[int]any](stepResults)
+		if err != nil {
+			return nil, err
+		}
+		inst.StepResults = stepResultsVal
 
 		if errStr.Valid && errStr.String != "" {
 			inst.Err = errors.New(errStr.String)

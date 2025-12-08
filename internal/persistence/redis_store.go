@@ -35,6 +35,7 @@ type redisInstancePayload struct {
 	CurrentStep int
 	Input       []byte
 	Output      []byte
+	StepResults []byte
 	Error       string
 }
 
@@ -75,6 +76,10 @@ func encodeRedisPayload(inst *api.WorkflowInstance) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	stepResultsBytes, err := encodeValue(inst.StepResults)
+	if err != nil {
+		return nil, err
+	}
 
 	errStr := ""
 	if inst.Err != nil {
@@ -88,6 +93,7 @@ func encodeRedisPayload(inst *api.WorkflowInstance) ([]byte, error) {
 		CurrentStep: inst.CurrentStep,
 		Input:       inBytes,
 		Output:      outBytes,
+		StepResults: stepResultsBytes,
 		Error:       errStr,
 	}
 
@@ -107,11 +113,15 @@ func decodeRedisPayload(data []byte) (*api.WorkflowInstance, error) {
 		return nil, err
 	}
 
-	inVal, err := decodeValue(payload.Input)
+	inVal, err := decodeValue[any](payload.Input)
 	if err != nil {
 		return nil, err
 	}
-	outVal, err := decodeValue(payload.Output)
+	outVal, err := decodeValue[any](payload.Output)
+	if err != nil {
+		return nil, err
+	}
+	stepResultsVal, err := decodeValue[map[int]any](payload.StepResults)
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +133,7 @@ func decodeRedisPayload(data []byte) (*api.WorkflowInstance, error) {
 		CurrentStep: payload.CurrentStep,
 		Input:       inVal,
 		Output:      outVal,
+		StepResults: stepResultsVal,
 	}
 	if payload.Error != "" {
 		inst.Err = errors.New(payload.Error)

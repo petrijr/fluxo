@@ -3,6 +3,7 @@ package persistence
 import (
 	"database/sql"
 	"encoding/gob"
+	"errors"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -43,11 +44,12 @@ func TestSQLiteInstanceStore_SaveGetUpdate(t *testing.T) {
 	store := newTestSQLiteStore(t)
 
 	inst := &api.WorkflowInstance{
-		ID:     "wf-1",
-		Name:   "test-wf",
-		Status: api.StatusRunning,
-		Output: "hello",
-		Input:  "in-hello",
+		ID:          "wf-1",
+		Name:        "test-wf",
+		Status:      api.StatusRunning,
+		Output:      "hello",
+		Input:       "in-hello",
+		StepResults: make(map[int]any),
 	}
 
 	if err := store.SaveInstance(inst); err != nil {
@@ -111,6 +113,7 @@ func TestSQLiteInstanceStore_StructOutputRoundtrip(t *testing.T) {
 			Msg: "hello",
 			N:   42,
 		},
+		StepResults: make(map[int]any),
 	}
 
 	if err := store.SaveInstance(inst); err != nil {
@@ -143,7 +146,7 @@ func TestSQLiteInstanceStore_GetInstanceNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for missing instance")
 	}
-	if err != ErrInstanceNotFound {
+	if !errors.Is(err, ErrInstanceNotFound) {
 		t.Fatalf("expected ErrInstanceNotFound, got %v", err)
 	}
 }
@@ -153,22 +156,25 @@ func TestSQLiteInstanceStore_ListInstancesFilter(t *testing.T) {
 
 	// Create three instances: two for wf-A (COMPLETED), one for wf-B (FAILED).
 	completedA1 := &api.WorkflowInstance{
-		ID:     "a-1",
-		Name:   "wf-A",
-		Status: api.StatusCompleted,
-		Output: "A1",
+		ID:          "a-1",
+		Name:        "wf-A",
+		Status:      api.StatusCompleted,
+		Output:      "A1",
+		StepResults: make(map[int]any),
 	}
 	completedA2 := &api.WorkflowInstance{
-		ID:     "a-2",
-		Name:   "wf-A",
-		Status: api.StatusCompleted,
-		Output: "A2",
+		ID:          "a-2",
+		Name:        "wf-A",
+		Status:      api.StatusCompleted,
+		Output:      "A2",
+		StepResults: make(map[int]any),
 	}
 	failedB := &api.WorkflowInstance{
-		ID:     "b-1",
-		Name:   "wf-B",
-		Status: api.StatusFailed,
-		Output: "B1",
+		ID:          "b-1",
+		Name:        "wf-B",
+		Status:      api.StatusFailed,
+		Output:      "B1",
+		StepResults: make(map[int]any),
 	}
 
 	for _, inst := range []*api.WorkflowInstance{completedA1, completedA2, failedB} {

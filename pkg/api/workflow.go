@@ -13,6 +13,9 @@ import (
 func init() {
 	gob.Register(SignalPayload{})
 	gob.Register(TimeoutPayload{})
+	gob.Register(map[int]any{})
+	gob.Register(map[int]interface{}{}) // important
+	gob.Register((*interface{})(nil))   // important
 }
 
 // Status represents the lifecycle state of a workflow instance.
@@ -603,6 +606,14 @@ type WorkflowInstance struct {
 	//   - After successful completion: len(steps)
 	//   - On failure: Index of the step that failed (or was cancelled).
 	CurrentStep int
+
+	// StepResults holds the output of successfully completed steps,
+	// keyed by their index in the WorkflowDefinition.Steps slice.
+	//
+	// This is used for step-level idempotency: on replay/resume, the engine
+	// can skip re-running steps that have already succeeded and reuse their
+	// cached outputs as inputs to downstream steps.
+	StepResults map[int]any
 }
 
 // InstanceListOptions controls how instances are listed.
