@@ -92,6 +92,20 @@ func (b *FlowBuilder) Parallel(name string, steps ...StepFunc) *FlowBuilder {
 	return b.Step(name, ParallelStep(steps...))
 }
 
+// While adds a looping step that executes body while cond(input) is true.
+// The loop is executed as a nested step; retries/backoff (if any) apply to
+// the entire loop execution.
+func (b *FlowBuilder) While(name string, cond ConditionFunc, body StepFunc) *FlowBuilder {
+	return b.Step(name, While(cond, body))
+}
+
+// Loop adds a step that executes body a fixed number of times. The loop is
+// executed as a nested step; retries/backoff (if any) apply to the entire
+// loop execution.
+func (b *FlowBuilder) Loop(name string, times int, body StepFunc) *FlowBuilder {
+	return b.Step(name, LoopStep(times, body))
+}
+
 // If adds a conditional branching step.
 func (b *FlowBuilder) If(name string, cond ConditionFunc, thenStep, elseStep StepFunc) *FlowBuilder {
 	return b.Step(name, IfStep(cond, thenStep, elseStep))

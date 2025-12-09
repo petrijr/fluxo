@@ -1,6 +1,7 @@
 package fluxo
 
 import (
+	"context"
 	"time"
 
 	"github.com/petrijr/fluxo/pkg/api"
@@ -61,4 +62,36 @@ func WaitForChildrenStep(getIDs func(input any) []string, pollInterval time.Dura
 // WaitForAnyChildStep waits until any of the children completes.
 func WaitForAnyChildStep(getIDs func(input any) []string, pollInterval time.Duration) StepFunc {
 	return api.WaitForAnyChildStep(getIDs, pollInterval)
+}
+
+// While returns a step that repeatedly executes body while cond(input) is true.
+// The entire loop is treated as a single engine step.
+func While(cond ConditionFunc, body StepFunc) StepFunc {
+	return api.WhileStep(cond, body)
+}
+
+// LoopStep returns a step that executes body a fixed number of times.
+// The entire loop is treated as a single engine step.
+func LoopStep(times int, body StepFunc) StepFunc {
+	return api.LoopStep(times, body)
+}
+
+// TypedStep wraps a strongly-typed function into a StepFunc.
+// Example:
+//
+//	fluxo.TypedStep(func(ctx context.Context, s MyState) (MyState, error) { ... })
+func TypedStep[I, O any](fn func(context.Context, I) (O, error)) StepFunc {
+	return api.TypedStep(fn)
+}
+
+// TypedWhile returns a step that repeatedly executes a strongly-typed body
+// while cond(input) is true.
+func TypedWhile[I any](cond func(I) bool, body func(context.Context, I) (I, error)) StepFunc {
+	return api.TypedWhile(cond, body)
+}
+
+// TypedLoop returns a step that executes a strongly-typed body a fixed number
+// of times.
+func TypedLoop[I any](times int, body func(context.Context, I) (I, error)) StepFunc {
+	return api.TypedLoop(times, body)
 }

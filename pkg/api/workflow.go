@@ -214,6 +214,119 @@ func SwitchStep(selector SelectorFunc, branches map[string]StepFunc, defaultStep
 	}
 }
 
+// WhileStep returns a StepFunc that repeatedly executes body while cond(input)
+// is true. The entire loop is treated as a single engine step: retries/backoff
+// (if any) apply to the whole loop execution.
+func WhileStep(cond ConditionFunc, body StepFunc) StepFunc {
+	return func(ctx context.Context, input any) (any, error) {
+		// Degenerate cases: no condition or body; pass input through unchanged.
+		if cond == nil || body == nil {
+			return input, nil
+		}
+
+		current := input
+		for cond(current) {
+			var err error
+			current, err = body(ctx, current)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return current, nil
+	}
+}
+
+// LoopStep returns a StepFunc that executes body a fixed number of times.
+// The loop is treated as a single engine step; retries/backoff (if any) apply
+// to the entire loop execution.
+func LoopStep(times int, body StepFunc) StepFunc {
+	return func(ctx context.Context, input any) (any, error) {
+		if times <= 0 || body == nil {
+			return input, nil
+		}
+
+		current := input
+		for i := 0; i < times; i++ {
+			var err error
+			current, err = body(ctx, current)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return current, nil
+	}
+}
+
+// TypedStep wraps a strongly-typed function into a generic StepFunc.
+// It performs a type assertion on input at runtime and returns an error
+// if the input is not of the expected type.
+func TypedStep[I, O any](fn func(context.Context, I) (O, error)) StepFunc {
+	return func(ctx context.Context, input any) (any, error) {
+		var zeroO O
+
+		// Handle nil input for pointer/slice/map types: let zero-value be used.
+		var typedI I
+		if input != nil {
+			v, ok := input.(I)
+			if !ok {
+				return nil, fmt.Errorf("TypedStep: expected input of type %T, got %T", typedI, input)
+			}
+			typedI = v
+		}
+
+		out, err := fn(ctx, typedI)
+		if err != nil {
+			return zeroO, err
+		}
+		return out, nil
+	}
+}
+
+// TypedWhile returns a StepFunc that repeatedly executes a strongly-typed
+// body while cond(input) is true. The loop is treated as a single engine step.
+func TypedWhile[I any](cond func(I) bool, body func(context.Context, I) (I, error)) StepFunc {
+	return WhileStep(
+		func(input any) bool {
+			if input == nil {
+				var zero I
+				return cond(zero)
+			}
+			v, ok := input.(I)
+			if !ok {
+				return false
+			}
+			return cond(v)
+		},
+		func(ctx context.Context, input any) (any, error) {
+			var typed I
+			if input != nil {
+				v, ok := input.(I)
+				if !ok {
+					return nil, fmt.Errorf("TypedWhile: expected input of type %T, got %T", typed, input)
+				}
+				typed = v
+			}
+			return body(ctx, typed)
+		},
+	)
+}
+
+// TypedLoop returns a StepFunc that executes a strongly-typed body a fixed
+// number of times. The loop is treated as a single engine step.
+func TypedLoop[I any](times int, body func(context.Context, I) (I, error)) StepFunc {
+	return LoopStep(times, func(ctx context.Context, input any) (any, error) {
+		var typed I
+		if input != nil {
+			v, ok := input.(I)
+			if !ok {
+				return nil, fmt.Errorf("TypedLoop: expected input of type %T, got %T", typed, input)
+			}
+			typed = v
+		}
+		return body(ctx, typed)
+	})
+}
+
 // ParallelStep returns a StepFunc that runs multiple child steps in parallel
 // and collects their outputs.
 //
