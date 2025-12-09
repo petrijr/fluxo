@@ -1,46 +1,51 @@
-# Fluxo - Lightweight Workflow Engine for Go
+# **Fluxo — Lightweight Workflow Engine for Go**
 
-A high-performance, embeddable, deterministic workflow engine written entirely in Go.  
-Designed as a **lightweight alternative to Temporal and Camunda**, suitable for microservices, CLIs, and on-prem
-deployments.
+[![Go Reference](https://pkg.go.dev/badge/github.com/petrijr/fluxo.svg)](https://pkg.go.dev/github.com/petrijr/fluxo)
+[![Go Report Card](https://goreportcard.com/badge/github.com/petrijr/fluxo)](https://goreportcard.com/report/github.com/petrijr/fluxo)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://github.com/petrijr/fluxo/actions/workflows/tests.yml/badge.svg)](https://github.com/petrijr/fluxo/actions/workflows/tests.yml)
+
+Fluxo is a **fast, embeddable, deterministic workflow engine** written in pure Go.
+It is designed as a practical alternative to Temporal/Camunda for teams that want workflow reliability **without running
+workflow infrastructure**.
+
+Fluxo runs inside your Go service, supports multiple persistence backends, and uses a simple, ergonomic API.
 
 ---
 
-## 🚀 Why This Exists
+## ✨ Features (MVP)
 
-Existing workflow engines are powerful but often:
+* **Deterministic, retryable workflow execution**
+* **Pluggable persistence**
 
-- Operationally complex
-- Heavy to deploy
-- Hard to embed
-- Overkill for small and medium services
+    * In-memory (testing/dev)
+    * SQLite
+    * PostgreSQL
+    * Redis
+    * MongoDB
+* **Built-in asynchronous worker**
+* **Strongly-typed workflow support** (via `TypedStep`, `TypedLoop`, `TypedWhile`)
+* **Parallel, conditional, and looping control flow**
+* **Timers & signals**
+* **LocalRunner** for in-process testing (non-durable)
 
-Fluxo aims to provide:
-
-- A small, pure-Go library you can import into any service
-- Deterministic, retryable workflows with durable state
-    - Note that `LocalRunner` is **not crash durable**; it’s for development, tests, and single-process
-      best-effort usage
-    - Durability guarantees refer to **workflow state** given a persistent persistence backend; async
-      queue durability depends on which queue implementation is used.
-- Pluggable persistence (in-memory, SQLite, Postgres, Redis, MongoDB)
-- Simple, testable APIs
+Fluxo is a *library* — not a service. You embed it directly into your application.
 
 ---
 
 ## 📦 Installation
 
-```bash
+```sh
 go get github.com/petrijr/fluxo
-````
+```
 
-Go 1.21+ is recommended.
+Go **1.21+** is recommended.
 
 ---
 
-## 🧪 Quick Start
+## 🚀 Quick Start
 
-Define a workflow using the fluent builder and run it with the in-memory engine:
+Define a workflow using the builder API and run it using an engine:
 
 ```go
 package main
@@ -48,18 +53,16 @@ package main
 import (
 	"context"
 	"log"
-
 	"github.com/petrijr/fluxo"
 )
 
 func createAccount(ctx context.Context, input any) (any, error) {
-	// do some work...
 	return map[string]any{"userID": "123"}, nil
 }
 
 func sendWelcomeEmail(ctx context.Context, input any) (any, error) {
 	state := input.(map[string]any)
-	log.Printf("sending welcome email to user %s", state["userID"])
+	log.Printf("sending welcome email to %s", state["userID"])
 	return state, nil
 }
 
@@ -87,18 +90,14 @@ func main() {
 
 ---
 
-## 🗄️ Persistence Backends
+## 🗄 Persistence Backends
 
-Fluxo separates workflow definitions (always in-memory) from instance persistence.
-Out of the box you get:
+Fluxo supports multiple backends. Definitions are always in-memory; instances and execution history depend on your
+backend choice.
 
-* **In-memory** – great for tests and local development
-* **SQLite**
-* **PostgreSQL**
-* **Redis**
-* **MongoDB**
+### In-Memory
 
-### In-memory
+Use for tests or ephemeral/local execution:
 
 ```go
 eng := fluxo.NewInMemoryEngine()
@@ -106,428 +105,364 @@ eng := fluxo.NewInMemoryEngine()
 
 ### SQLite
 
+Embedded durability; ideal default for single-node services:
+
 ```go
-db, err := sql.Open("sqlite", "file:fluxo.db?_journal=WAL")
-eng, err := fluxo.NewSQLiteEngine(db)
+db, _ := sql.Open("sqlite", "file:fluxo.db?_journal=WAL")
+eng, _ := fluxo.NewSQLiteEngine(db)
 ```
 
 ### PostgreSQL
 
 ```go
-db, err := sql.Open("pgx", "postgres://user:pass@localhost:5432/fluxo")
-eng, err := fluxo.NewPostgresEngine(db)
+db, _ := sql.Open("pgx", "postgres://user:pass@localhost:5432/fluxo")
+eng, _ := fluxo.NewPostgresEngine(db)
 ```
 
 ### Redis
 
 ```go
-client := redis.NewClient(&redis.Options{
-Addr: "localhost:6379",
-})
-eng := fluxo.NewRedisEngine(client)
+rdb := redis.NewClient(&redis.Options{ Addr: "localhost:6379" })
+eng := fluxo.NewRedisEngine(rdb)
 ```
 
 ### MongoDB
 
 ```go
-client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
-if err != nil { /* handle */ }
-
-// Uses database "fluxo" and collection "instances" by default.
+client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
 eng := fluxo.NewMongoEngine(client)
 ```
 
-All persistent engines share the same API, so switching backends doesn’t change your workflow code.
+Backend choice does **not** change workflow code.
 
 ---
 
-Gotcha — we’ll:
+## 🔧 Control Flow
 
-1. Add a **README control-flow section** showing `While` / `Loop`.
-2. Add **typed helpers** (`TypedStep`, `TypedWhile`, `TypedLoop`) + a small test so they’re covered.
+Fluxo provides simple, composable workflow primitives.
 
-I’ll keep everything concrete so you can paste it in.
-
----
-
-## 1. Typed helpers in the core API (`pkg/api`)
-
-### 1.1 Add generic helpers in `pkg/api/workflow.go`
-
-Near the existing `StepFunc`, `ConditionFunc`, `WhileStep`, `LoopStep` definitions, add:
+### Sequential Steps
 
 ```go
-// TypedStep wraps a strongly-typed function into a generic StepFunc.
-// It performs a type assertion on input at runtime and returns an error
-// if the input is not of the expected type.
-func TypedStep[I, O any](fn func(context.Context, I) (O, error)) StepFunc {
-return func (ctx context.Context, input any) (any, error) {
-var zeroO O
-
-// Handle nil input for pointer/slice/map types: let zero-value be used.
-var typedI I
-if input != nil {
-v, ok := input.(I)
-if !ok {
-return nil, fmt.Errorf("TypedStep: expected input of type %T, got %T", typedI, input)
-}
-typedI = v
-}
-
-out, err := fn(ctx, typedI)
-if err != nil {
-return zeroO, err
-}
-return out, nil
-}
-}
-
-// TypedWhile returns a StepFunc that repeatedly executes a strongly-typed
-// body while cond(input) is true. The loop is treated as a single engine step.
-func TypedWhile[I any](cond func(I) bool, body func (context.Context, I) (I, error)) StepFunc {
-return WhileStep(
-func (input any) bool {
-if input == nil {
-var zero I
-return cond(zero)
-}
-v, ok := input.(I)
-if !ok {
-return false
-}
-return cond(v)
-},
-func (ctx context.Context, input any) (any, error) {
-var typed I
-if input != nil {
-v, ok := input.(I)
-if !ok {
-return nil, fmt.Errorf("TypedWhile: expected input of type %T, got %T", typed, input)
-}
-typed = v
-}
-return body(ctx, typed)
-},
-)
-}
-
-// TypedLoop returns a StepFunc that executes a strongly-typed body a fixed
-// number of times. The loop is treated as a single engine step.
-func TypedLoop[I any](times int, body func (context.Context, I) (I, error)) StepFunc {
-return LoopStep(times, func (ctx context.Context, input any) (any, error) {
-var typed I
-if input != nil {
-v, ok := input.(I)
-if !ok {
-return nil, fmt.Errorf("TypedLoop: expected input of type %T, got %T", typed, input)
-}
-typed = v
-}
-return body(ctx, typed)
-})
-}
+flow.Step("a", stepA).Step("b", stepB)
 ```
 
-You’ll need `fmt` imported at the top of `pkg/api/workflow.go` if it isn’t already:
+### Conditionals
 
 ```go
-import (
-"context"
-"fmt"
-// ...
+flow.If("check-limit",
+func (input any) bool { return input.(int) < 100 },
+fluxo.StepFunc(func (ctx context.Context, in any) (any, error) { return "ok", nil }),
+fluxo.StepFunc(func (ctx context.Context, in any) (any, error) { return "too large", nil }),
 )
 ```
 
-These helpers:
-
-* Keep all determinism properties (no randomness/time).
-* Fail fast with a clear error if the input type is wrong.
-* Don’t require generic methods (so you’re safe on older Go versions).
-
----
-
-## 2. Public typed helpers in `fluxo` (`steps.go`)
-
-Expose them at the root package so users don’t have to import `pkg/api`.
-
-**File:** `steps.go`
-
-Add:
+### Parallel Work
 
 ```go
-// TypedStep wraps a strongly-typed function into a StepFunc.
-// Example:
-//
-//   fluxo.TypedStep(func(ctx context.Context, s MyState) (MyState, error) { ... })
-//
-func TypedStep[I, O any](fn func(context.Context, I) (O, error)) StepFunc {
-return api.TypedStep(fn)
-}
-
-// TypedWhile returns a step that repeatedly executes a strongly-typed body
-// while cond(input) is true.
-func TypedWhile[I any](cond func(I) bool, body func (context.Context, I) (I, error)) StepFunc {
-return api.TypedWhile(cond, body)
-}
-
-// TypedLoop returns a step that executes a strongly-typed body a fixed number
-// of times.
-func TypedLoop[I any](times int, body func (context.Context, I) (I, error)) StepFunc {
-return api.TypedLoop(times, body)
-}
+flow.Parallel("prepare",
+stepFetchUser,
+stepFetchSettings,
+stepWarmCache,
+)
 ```
 
-Usage from a user’s POV:
+### Loops
+
+Fixed-count:
 
 ```go
-type State struct {
-Count int
-}
+flow.Loop("repeat", 3, body)
+```
 
-flow := fluxo.New("typed-loop").
-Step("loop", fluxo.TypedLoop(3, func (ctx context.Context, s State) (State, error) {
-s.Count++
+While-condition:
+
+```go
+flow.While("until-ready",
+func (input any) bool { return !input.(State).Ready },
+body,
+)
+```
+
+### Typed Helpers
+
+Avoid `any` by using strongly-typed steps:
+
+```go
+flow.Step("typed", fluxo.TypedStep(func(ctx context.Context, s Counter) (Counter, error) {
+s.Value++
 return s, nil
 }))
 ```
 
-No changes needed to `FlowBuilder` — `Step` already accepts `StepFunc`, and these helpers produce exactly that.
-
----
-
-## 3. Tiny test for typed helpers
-
-Let’s add a simple test that:
-
-* Uses `TypedWhile` and `TypedLoop`.
-* Verifies determinism & type safety at a basic level.
-
-**File:** `loops_typed_test.go` (repo root)
+Typed looping:
 
 ```go
-package fluxo
-
-import (
-	"context"
-	"testing"
-
-	"github.com/stretchr/testify/require"
-)
-
-type typedCounter struct {
-	Value int
-}
-
-func TestTypedLoopAndTypedWhile(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	eng := NewInMemoryEngine()
-
-	flow := New("typed-loop-while").
-		Step("loop-3-times", TypedLoop(3, func(ctx context.Context, s typedCounter) (typedCounter, error) {
-			s.Value++
-			return s, nil
-		})).
-		Step("while-less-than-5", TypedWhile(
-			func(s typedCounter) bool { return s.Value < 5 },
-			func(ctx context.Context, s typedCounter) (typedCounter, error) {
-				s.Value++
-				return s, nil
-			},
-		))
-
-	require.NoError(t, flow.Register(eng))
-
-	inst, err := Run(ctx, eng, flow.Name(), typedCounter{})
-	require.NoError(t, err)
-	require.NotNil(t, inst)
-	require.Equal(t, StatusCompleted, inst.Status)
-
-	out, ok := inst.Output.(typedCounter)
-	require.True(t, ok, "expected typedCounter output, got %T", inst.Output)
-	require.Equal(t, 5, out.Value, "expected final Value 5 (3 from loop + 2 from while)")
-
-	// Run again to assert determinism.
-	inst2, err := Run(ctx, eng, flow.Name(), typedCounter{})
-	require.NoError(t, err)
-	out2, ok := inst2.Output.(typedCounter)
-	require.True(t, ok)
-	require.Equal(t, 5, out2.Value)
-}
-```
-
-You can add a separate negative test for wrong type if you like, but this hits the happy path and makes sure generics +
-loops behave as expected.
-
----
-
-## 🧭 Control Flow
-
-Fluxo gives you simple, composable control-flow building blocks.
-
-### Conditional branches
-
-Use `If` for simple branching:
-
-```go
-flow := fluxo.New("payment").
-If("check-limit",
-func (input any) bool {
-p, _ := input.(PaymentRequest)
-return p.Amount <= 100
-},
-fluxo.StepFunc(func (ctx context.Context, input any) (any, error) {
-// happy path
-return approve(ctx, input)
-}),
-fluxo.StepFunc(func (ctx context.Context, input any) (any, error) {
-// escalate
-return requestManagerApproval(ctx, input)
-}),
-)
-```
-
-### Parallel steps
-
-Use `Parallel` to run multiple steps concurrently and wait for all of them:
-
-```go
-flow := fluxo.New("fan-out").
-Parallel("prepare-resources",
-stepA,
-stepB,
-stepC,
-)
-```
-
-Each sub-step receives the same input and runs in its own worker.
-
-### Loops
-
-Fluxo supports simple looping constructs that are executed **within a single engine step** (so retries/backoff apply to
-the whole loop):
-
-```go
-// Loop a fixed number of times.
-flow := fluxo.New("count-to-3").
-Loop("loop-3-times", 3, func (ctx context.Context, input any) (any, error) {
-state, _ := input.(Counter)
-state.Value++
-return state, nil
-})
-
-// While a condition holds.
-flow = fluxo.New("while-less-than-5").
-While("while-less-than-5",
-func (input any) bool {
-state, _ := input.(Counter)
-return state.Value < 5
-},
-func (ctx context.Context, input any) (any, error) {
-state, _ := input.(Counter)
-state.Value++
-return state, nil
-},
-)
-```
-
-Loops are deterministic as long as your condition and body are deterministic.
-
-### Typed helpers
-
-Working with `any` everywhere can get noisy. Fluxo provides typed helpers to keep your
-workflow logic strongly-typed while still using the generic engine:
-
-```go
-type Counter struct {
-Value int
-}
-
-flow := fluxo.New("typed-loop").
-Step("loop-and-while",
-fluxo.TypedWhile(
-func (s Counter) bool { return s.Value < 5 },
+flow.Step("loop", fluxo.TypedWhile(
+func(s Counter) bool { return s.Value < 5 },
 func (ctx context.Context, s Counter) (Counter, error) {
 s.Value++
 return s, nil
 },
-),
-)
+))
 ```
 
-You can also wrap strongly-typed steps and loops:
+---
+
+## 🧵 Workers (Asynchronous Execution)
+
+Fluxo workers pull tasks from the task queue and execute them:
 
 ```go
-flow := fluxo.New("typed").
-Step("typed-step",
-fluxo.TypedStep(func (ctx context.Context, s Counter) (Counter, error) {
-s.Value += 10
-return s, nil
-}),
-).
-Step("typed-loop",
-fluxo.TypedLoop(3, func (ctx context.Context, s Counter) (Counter, error) {
-s.Value++
-return s, nil
-}),
-)
+w := fluxo.NewWorker(eng, queue)
+go w.Run(ctx)
 ```
 
-Under the hood these helpers perform a runtime type assertion on the input and emit a
-clear error if the type doesn’t match.
+Workers can be horizontally scaled.
 
-## 📊 Logging & Metrics
+---
 
-Fluxo has a pluggable **Observer** interface used for structured logging and basic metrics.
+## 🧪 LocalRunner (In-Process Testing)
 
-Common implementations:
-
-* `fluxo.LoggingObserver` + `fluxo.NewLoggingObserver`
-* `fluxo.BasicMetrics` (+ `BasicMetricsSnapshot`)
-* `fluxo.CompositeObserver` to combine multiple observers
-* `fluxo.NoopObserver` (the default)
-
-### Structured Logging
+LocalRunner bundles engine + queue + worker for easy test setups.
 
 ```go
-logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+runner := fluxo.NewLocalRunner()
+runner.StartWorkers(ctx, 1)
+runner.StartWorkflowAsync(ctx, "MyFlow", input)
+```
 
-obs := fluxo.NewLoggingObserver(logger)
+⚠️ **Not crash-durable** — for tests & dev only.
 
-// Use a constructor that accepts an Observer:
+---
+
+## 📊 Observability
+
+Fluxo exposes an `Observer` interface for logging and metrics.
+
+### Logging
+
+```go
+obs := fluxo.NewLoggingObserver(nil) // uses slog.Default()
 eng := fluxo.NewInMemoryEngineWithObserver(obs)
 ```
 
-### Basic Metrics
+### Metrics
 
 ```go
 metrics := &fluxo.BasicMetrics{}
-
-obs := fluxo.NewCompositeObserver(
-fluxo.NewLoggingObserver(nil), // uses slog.Default()
-metrics,
-)
-
-eng, err := fluxo.NewSQLiteEngineWithObserver(db, obs)
-
-// ... run some workflows ...
-
+eng := fluxo.NewSQLiteEngineWithObserver(db, metrics)
 snapshot := metrics.Snapshot()
-// snapshot.WorkflowsCompleted, snapshot.StepsCompleted, etc.
 ```
 
-You can expose these counters via your preferred metrics system by periodically reading the snapshot.
+---
+
+## ⚙️ Performance
+
+Fluxo targets **< 1ms overhead per step** on typical hardware (excluding user logic).
+This is enforced via a performance regression test in the repository.
+
+Actual performance varies with backend choice.
+
+---
+
+## 🧱 Guarantees & Limitations (Honest MVP)
+
+### ✔ Engine Guarantees
+
+* Deterministic workflow planning
+* At-least-once step execution
+* Durable workflow state when using persistent backends
+* Worker crash recovery (persistent backends only)
+
+### ✔ Non-Guarantees (Current MVP)
+
+* No global saga/compensation framework
+* No distributed transaction guarantees
+* No cross-workflow coordination primitives
+* No built-in admin UI or orchestration service
+* LocalRunner is **not** durable and cannot recover from process crashes
+
+---
+
+## 🗺 Roadmap (Post-MVP)
+
+These are intentionally **not** implemented yet but may come next:
+
+* Saga helpers (compensation patterns)
+* Better observability integrations (Prometheus, OpenTelemetry)
+* Workflow versioning helpers
+* CLI tooling for inspecting workflows
+* Kafka/NATS queue backends
+* More ergonomic DSL for workflow definitions
+* Optional workflow visualization tooling
+
+---
+
+## 🤝 Contributing
+
+Issues, PRs, and feedback are welcome!
+This project is still evolving and contributions are encouraged.
 
 ---
 
 ## 📄 License
 
-MIT — see `LICENSE` for details.
+MIT — see `LICENSE`.
+
+# API Reference
+
+Great — here are the three additions you asked for:
+
+1. **Badges for the README**
+2. **An official API Reference section**
+3. **A full CONTRIBUTING.md suitable for a public Go project**
+
+Everything is written to be immediately usable in a GitHub repository.
 
 ---
 
-## 🧭 Project Status
+# ✅ **1. Badges for README**
 
-Currently in **MVP implementation**.
-APIs are usable but may evolve; feedback and contributions are very welcome.
+These should go at the very top of your README, immediately after the project title:
+
+```md
+[![Go Reference](https://pkg.go.dev/badge/github.com/petrijr/fluxo.svg)](https://pkg.go.dev/github.com/petrijr/fluxo)
+[![Go Report Card](https://goreportcard.com/badge/github.com/petrijr/fluxo)](https://goreportcard.com/report/github.com/petrijr/fluxo)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://github.com/petrijr/fluxo/actions/workflows/tests.yml/badge.svg)](https://github.com/petrijr/fluxo/actions/workflows/tests.yml)
+```
+
+These follow standard Go OSS style:
+
+* **pkg.go.dev** reference badge
+* **Go Report Card**
+* **License**
+* **GitHub Actions test workflow** (you can rename `tests.yml` if needed)
+
+---
+
+# ✅ **2. API Reference Section for README**
+
+Below is a concise but complete “API Reference (MVP)” section that matches your current codebase accurately and
+honestly.
+
+Add this to your README after the “Control Flow” or “Persistence” section.
+
+---
+
+## 📘 API Reference (MVP)
+
+This is the public API surface area for Fluxo’s MVP release.
+
+### Top-Level Constructors
+
+```go
+func New(name string) *FlowBuilder
+func Run(ctx context.Context, eng Engine, workflow string, input any) (*Instance, error)
+```
+
+### Engines
+
+```go
+func NewInMemoryEngine() Engine
+func NewInMemoryEngineWithObserver(o Observer) Engine
+
+func NewSQLiteEngine(db *sql.DB) (Engine, error)
+func NewSQLiteEngineWithObserver(db *sql.DB, o Observer) (Engine, error)
+
+func NewPostgresEngine(db *sql.DB) (Engine, error)
+func NewPostgresEngineWithObserver(db *sql.DB, o Observer) (Engine, error)
+
+func NewRedisEngine(client *redis.Client) Engine
+func NewRedisEngineWithObserver(client *redis.Client, o Observer) Engine
+
+func NewMongoEngine(client *mongo.Client) Engine
+func NewMongoEngineWithObserver(client *mongo.Client, o Observer) Engine
+```
+
+### Task Queues
+
+```go
+func NewInMemoryQueue(capacity int) TaskQueue
+func NewSQLiteQueue(db *sql.DB) (TaskQueue, error)
+func NewPostgresQueue(db *sql.DB) (TaskQueue, error)
+func NewRedisQueue(client *redis.Client) TaskQueue
+func NewMongoQueue(client *mongo.Client) TaskQueue
+```
+
+### Worker
+
+```go
+func NewWorker(eng Engine, q TaskQueue) *Worker
+func NewWorkerWithConfig(eng Engine, q TaskQueue, cfg worker.Config) *Worker
+```
+
+Key methods:
+
+```go
+func (w *Worker) Run(ctx context.Context) error
+func (w *Worker) ProcessOne(ctx context.Context) (bool, error)
+```
+
+### LocalRunner
+
+```go
+type LocalRunner struct {
+Engine Engine
+Queue  TaskQueue
+Worker *Worker
+}
+
+func NewLocalRunner() *LocalRunner
+func (r *LocalRunner) StartWorkers(ctx context.Context, n int) error
+func (r *LocalRunner) StartWorkflowAsync(ctx context.Context, name string, input any) error
+func (r *LocalRunner) SignalAsync(ctx context.Context, instanceID string, signal string, payload any) error
+```
+
+### Observability
+
+```go
+type Observer interface {
+// lifecycle + metrics events
+}
+
+func NewLoggingObserver(logger *slog.Logger) Observer
+func NewCompositeObserver(obs ...Observer) Observer
+func NewNoopObserver() Observer
+
+type BasicMetrics struct { /* counters */ }
+func (m *BasicMetrics) Snapshot() BasicMetricsSnapshot
+```
+
+### Builder API
+
+```go
+type FlowBuilder struct {
+// ...
+}
+
+func (b *FlowBuilder) Step(name string, fn StepFunc) *FlowBuilder
+func (b *FlowBuilder) If(name string, cond ConditionFunc, then StepFunc, els StepFunc) *FlowBuilder
+func (b *FlowBuilder) Parallel(name string, steps ...StepFunc) *FlowBuilder
+func (b *FlowBuilder) Loop(name string, times int, body StepFunc) *FlowBuilder
+func (b *FlowBuilder) While(name string, cond ConditionFunc, body StepFunc) *FlowBuilder
+func (b *FlowBuilder) WaitForSignal(name, signal string) *FlowBuilder
+func (b *FlowBuilder) Sleep(name string, dur time.Duration) *FlowBuilder
+func (b *FlowBuilder) SleepUntil(name string, t time.Time) *FlowBuilder
+```
+
+### Step Types
+
+```go
+type StepFunc func (ctx context.Context, input any) (any, error)
+type ConditionFunc func(input any) bool
+```
+
+### Typed Helpers
+
+```go
+func TypedStep[I, O any](fn func(context.Context, I) (O, error)) StepFunc
+func TypedWhile[I any](cond func (I) bool, body func (context.Context, I) (I, error)) StepFunc
+func TypedLoop[I any](times int, body func (context.Context, I) (I, error)) StepFunc
+```
