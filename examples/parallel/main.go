@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/petrijr/fluxo/internal/engine"
-	"github.com/petrijr/fluxo/pkg/api"
+	"github.com/petrijr/fluxo"
 )
 
 func main() {
 	ctx := context.Background()
-	eng := engine.NewInMemoryEngine()
+	eng := fluxo.NewInMemoryEngine()
 
 	// Register workflows
 	if err := registerSquareChildWorkflow(eng); err != nil {
@@ -33,7 +32,7 @@ func main() {
 	runAndPrint(ctx, eng, "parallel-squares-durable", input)
 }
 
-func runAndPrint(ctx context.Context, eng api.Engine, name string, input []int) {
+func runAndPrint(ctx context.Context, eng fluxo.Engine, name string, input []int) {
 	inst, err := eng.Run(ctx, name, input)
 	if err != nil {
 		panic(fmt.Sprintf("Run(%s) failed: %v", name, err))
@@ -57,10 +56,10 @@ func runAndPrint(ctx context.Context, eng api.Engine, name string, input []int) 
 // Child workflow: squares a single integer
 // -----------------------------------------------------------------------------
 
-func registerSquareChildWorkflow(eng api.Engine) error {
-	wf := api.WorkflowDefinition{
+func registerSquareChildWorkflow(eng fluxo.Engine) error {
+	wf := fluxo.WorkflowDefinition{
 		Name: "square-child",
-		Steps: []api.StepDefinition{
+		Steps: []fluxo.StepDefinition{
 			{
 				Name: "square",
 				Fn: func(ctx context.Context, input any) (any, error) {
@@ -80,21 +79,21 @@ func registerSquareChildWorkflow(eng api.Engine) error {
 // Durable parallel workflow: fan-out to child instances, then join.
 // -----------------------------------------------------------------------------
 
-func registerParallelSquaresDurableWorkflow(eng api.Engine) error {
-	wf := api.WorkflowDefinition{
+func registerParallelSquaresDurableWorkflow(eng fluxo.Engine) error {
+	wf := fluxo.WorkflowDefinition{
 		Name: "parallel-squares-durable",
-		Steps: []api.StepDefinition{
+		Steps: []fluxo.StepDefinition{
 			{
 				Name: "start-children",
-				Fn: api.StartChildrenStep(func(input any) ([]api.ChildWorkflowSpec, error) {
+				Fn: fluxo.StartChildrenStep(func(input any) ([]fluxo.ChildWorkflowSpec, error) {
 					values, ok := input.([]int)
 					if !ok {
 						return nil, fmt.Errorf("start-children: expected []int, got %T", input)
 					}
 
-					specs := make([]api.ChildWorkflowSpec, 0, len(values))
+					specs := make([]fluxo.ChildWorkflowSpec, 0, len(values))
 					for _, v := range values {
-						specs = append(specs, api.ChildWorkflowSpec{
+						specs = append(specs, fluxo.ChildWorkflowSpec{
 							Name:  "square-child",
 							Input: v,
 						})
@@ -104,7 +103,7 @@ func registerParallelSquaresDurableWorkflow(eng api.Engine) error {
 			},
 			{
 				Name: "wait-for-children",
-				Fn: api.WaitForChildrenStep(
+				Fn: fluxo.WaitForChildrenStep(
 					func(input any) []string {
 						ids, ok := input.([]string)
 						if !ok {
@@ -143,13 +142,13 @@ func registerParallelSquaresDurableWorkflow(eng api.Engine) error {
 // In-process parallel workflow: uses ParallelMapStep
 // -----------------------------------------------------------------------------
 
-func registerParallelSquaresInProcessWorkflow(eng api.Engine) error {
-	wf := api.WorkflowDefinition{
+func registerParallelSquaresInProcessWorkflow(eng fluxo.Engine) error {
+	wf := fluxo.WorkflowDefinition{
 		Name: "parallel-squares-inprocess",
-		Steps: []api.StepDefinition{
+		Steps: []fluxo.StepDefinition{
 			{
 				Name: "square-each-in-parallel",
-				Fn: api.ParallelMapStep(func(ctx context.Context, input any) (any, error) {
+				Fn: fluxo.ParallelMapStep(func(ctx context.Context, input any) (any, error) {
 					n, ok := input.(int)
 					if !ok {
 						return nil, fmt.Errorf("square-each-in-parallel: expected int, got %T", input)

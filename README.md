@@ -19,6 +19,10 @@ Fluxo aims to provide:
 
 - A small, pure-Go library you can import into any service
 - Deterministic, retryable workflows with durable state
+    - Note that `LocalRunner` is **not crash durable**; it’s for development, tests, and single-process
+      best-effort usage
+    - Durability guarantees refer to **workflow state** given a persistent persistence backend; async
+      queue durability depends on which queue implementation is used.
 - Pluggable persistence (in-memory, SQLite, Postgres, Redis, MongoDB)
 - Simple, testable APIs
 
@@ -382,7 +386,7 @@ fluxo.StepFunc(func (ctx context.Context, input any) (any, error) {
 return requestManagerApproval(ctx, input)
 }),
 )
-````
+```
 
 ### Parallel steps
 

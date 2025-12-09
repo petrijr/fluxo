@@ -13,12 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/petrijr/fluxo/internal/engine"
+	"github.com/petrijr/fluxo"
 	_ "modernc.org/sqlite"
-
-	"github.com/petrijr/fluxo/internal/taskqueue"
-	"github.com/petrijr/fluxo/pkg/api"
-	"github.com/petrijr/fluxo/pkg/worker"
 )
 
 // ApprovalRequest is the input payload for the approval workflow.
@@ -45,12 +41,12 @@ func main() {
 	}
 	defer db.Close()
 
-	eng, err := engine.NewSQLiteEngine(db)
+	eng, err := fluxo.NewSQLiteEngine(db)
 	if err != nil {
 		log.Fatalf("NewSQLiteEngine failed: %v", err)
 	}
 
-	queue, err := taskqueue.NewSQLiteQueue(db)
+	queue, err := fluxo.NewSQLiteQueue(db)
 	if err != nil {
 		log.Fatalf("NewSQLiteQueue failed: %v", err)
 	}
@@ -58,7 +54,7 @@ func main() {
 	// Worker with:
 	// - No task-level retries (MaxAttempts=1)
 	// - Auto-timeout for approval after 30s
-	w := worker.NewWithConfig(eng, queue, worker.Config{
+	w := fluxo.NewWorkerWithConfig(eng, queue, fluxo.Config{
 		MaxAttempts:          1,
 		Backoff:              0,
 		DefaultSignalTimeout: 30 * time.Second,
@@ -98,10 +94,10 @@ func main() {
 //	prepare -> wait-approval -> finalize
 //
 // finalize distinguishes between timeout vs normal approval.
-func registerApprovalWorkflow(engine api.Engine) error {
-	wf := api.WorkflowDefinition{
+func registerApprovalWorkflow(engine fluxo.Engine) error {
+	wf := fluxo.WorkflowDefinition{
 		Name: "purchase-approval",
-		Steps: []api.StepDefinition{
+		Steps: []fluxo.StepDefinition{
 			{
 				Name: "prepare",
 				Fn: func(ctx context.Context, input any) (any, error) {
@@ -116,13 +112,13 @@ func registerApprovalWorkflow(engine api.Engine) error {
 			},
 			{
 				Name: "wait-approval",
-				Fn:   api.WaitForSignalStep("approve"),
+				Fn:   fluxo.WaitForSignalStep("approve"),
 			},
 			{
 				Name: "finalize",
 				Fn: func(ctx context.Context, input any) (any, error) {
 					switch v := input.(type) {
-					case api.TimeoutPayload:
+					case fluxo.TimeoutPayload:
 						log.Printf("[finalize] request timed out: %s", v.Reason)
 						return map[string]any{
 							"status": "timeout",
@@ -145,7 +141,7 @@ func registerApprovalWorkflow(engine api.Engine) error {
 }
 
 // runWorkerLoop continuously processes tasks from the queue.
-func runWorkerLoop(ctx context.Context, w *worker.Worker) {
+func runWorkerLoop(ctx context.Context, w *fluxo.Worker) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -185,7 +181,7 @@ func runWorkerLoop(ctx context.Context, w *worker.Worker) {
 //	  "request_id": "REQ-<timestamp>",
 //	  "message": "request accepted"
 //	}
-func handleCreateRequest(ctx context.Context, engine api.Engine, w *worker.Worker, wr http.ResponseWriter, r *http.Request) {
+func handleCreateRequest(ctx context.Context, engine fluxo.Engine, w *fluxo.Worker, wr http.ResponseWriter, r *http.Request) {
 	type input struct {
 		Requester string  `json:"requester"`
 		Amount    float64 `json:"amount"`
@@ -236,7 +232,7 @@ func handleCreateRequest(ctx context.Context, engine api.Engine, w *worker.Worke
 // Response:
 //
 //	202 Accepted or 404 Not Found
-func handleApprove(ctx context.Context, engine api.Engine, w *worker.Worker, wr http.ResponseWriter, r *http.Request) {
+func handleApprove(ctx context.Context, engine fluxo.Engine, w *fluxo.Worker, wr http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/approve/"), "/")
 	if len(parts) < 1 || parts[0] == "" {
 		http.Error(wr, "missing request ID", http.StatusBadRequest)
@@ -291,7 +287,7 @@ func handleApprove(ctx context.Context, engine api.Engine, w *worker.Worker, wr 
 //	?limit=10
 //
 // Response: list of all purchase-approval instances with basic fields.
-func handleListInstances(ctx context.Context, engine api.Engine, wr http.ResponseWriter, r *http.Request) {
+func handleListInstances(ctx context.Context, engine fluxo.Engine, wr http.ResponseWriter, r *http.Request) {
 	limit := 100
 	if q := r.URL.Query().Get("limit"); q != "" {
 		if n, err := strconv.Atoi(q); err == nil && n > 0 && n <= 1000 {
@@ -299,7 +295,7 @@ func handleListInstances(ctx context.Context, engine api.Engine, wr http.Respons
 		}
 	}
 
-	instances, err := engine.ListInstances(ctx, api.InstanceListOptions{
+	instances, err := engine.ListInstances(ctx, fluxo.InstanceListOptions{
 		WorkflowName: "purchase-approval",
 	})
 	if err != nil {
@@ -313,11 +309,11 @@ func handleListInstances(ctx context.Context, engine api.Engine, wr http.Respons
 	}
 
 	type view struct {
-		InstanceID  string      `json:"instance_id"`
-		RequestID   string      `json:"request_id,omitempty"`
-		Status      api.Status  `json:"status"`
-		CurrentStep int         `json:"current_step"`
-		Output      interface{} `json:"output,omitempty"`
+		InstanceID  string       `json:"instance_id"`
+		RequestID   string       `json:"request_id,omitempty"`
+		Status      fluxo.Status `json:"status"`
+		CurrentStep int          `json:"current_step"`
+		Output      interface{}  `json:"output,omitempty"`
 	}
 
 	out := make([]view, 0, len(instances))
@@ -343,7 +339,7 @@ func handleListInstances(ctx context.Context, engine api.Engine, wr http.Respons
 // Response:
 //
 //	200 with instance info, or 404.
-func handleGetInstanceByRequestID(ctx context.Context, engine api.Engine, wr http.ResponseWriter, r *http.Request) {
+func handleGetInstanceByRequestID(ctx context.Context, engine fluxo.Engine, wr http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/instances/"), "/")
 	if len(parts) < 1 || parts[0] == "" {
 		http.Error(wr, "missing request ID", http.StatusBadRequest)
@@ -363,11 +359,11 @@ func handleGetInstanceByRequestID(ctx context.Context, engine api.Engine, wr htt
 	}
 
 	type view struct {
-		InstanceID  string      `json:"instance_id"`
-		RequestID   string      `json:"request_id,omitempty"`
-		Status      api.Status  `json:"status"`
-		CurrentStep int         `json:"current_step"`
-		Output      interface{} `json:"output,omitempty"`
+		InstanceID  string       `json:"instance_id"`
+		RequestID   string       `json:"request_id,omitempty"`
+		Status      fluxo.Status `json:"status"`
+		CurrentStep int          `json:"current_step"`
+		Output      interface{}  `json:"output,omitempty"`
 	}
 	v := view{
 		InstanceID:  inst.ID,
@@ -389,8 +385,8 @@ var errInstanceNotFound = errors.New("instance not found")
 
 // findWaitingInstanceByRequestID finds a WAITING purchase-approval instance whose
 // Input is an ApprovalRequest with the given RequestID.
-func findWaitingInstanceByRequestID(ctx context.Context, engine api.Engine, requestID string) (*api.WorkflowInstance, error) {
-	instances, err := engine.ListInstances(ctx, api.InstanceListOptions{
+func findWaitingInstanceByRequestID(ctx context.Context, engine fluxo.Engine, requestID string) (*fluxo.WorkflowInstance, error) {
+	instances, err := engine.ListInstances(ctx, fluxo.InstanceListOptions{
 		WorkflowName: "purchase-approval",
 	})
 	if err != nil {
@@ -398,7 +394,7 @@ func findWaitingInstanceByRequestID(ctx context.Context, engine api.Engine, requ
 	}
 
 	for _, inst := range instances {
-		if inst.Status != api.StatusWaiting {
+		if inst.Status != fluxo.StatusWaiting {
 			continue
 		}
 		req, ok := inst.Input.(ApprovalRequest)
@@ -415,8 +411,8 @@ func findWaitingInstanceByRequestID(ctx context.Context, engine api.Engine, requ
 
 // findLatestInstanceByRequestID finds the most recent instance for the given RequestID.
 // (For this example we just return the first match; you can refine selection if needed.)
-func findLatestInstanceByRequestID(ctx context.Context, engine api.Engine, requestID string) (*api.WorkflowInstance, error) {
-	instances, err := engine.ListInstances(ctx, api.InstanceListOptions{
+func findLatestInstanceByRequestID(ctx context.Context, engine fluxo.Engine, requestID string) (*fluxo.WorkflowInstance, error) {
+	instances, err := engine.ListInstances(ctx, fluxo.InstanceListOptions{
 		WorkflowName: "purchase-approval",
 	})
 	if err != nil {

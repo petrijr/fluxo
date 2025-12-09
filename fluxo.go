@@ -5,19 +5,21 @@ import (
 	"database/sql"
 
 	"github.com/petrijr/fluxo/internal/engine"
+	"github.com/petrijr/fluxo/internal/taskqueue"
 	"github.com/petrijr/fluxo/pkg/api"
+	"github.com/petrijr/fluxo/pkg/worker"
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // Re-export key types so users don't need to dig into pkg/api.
-
 type (
 	Engine               = api.Engine
 	WorkflowDefinition   = api.WorkflowDefinition
 	WorkflowInstance     = api.WorkflowInstance
 	InstanceListOptions  = api.InstanceListOptions
 	Status               = api.Status
+	StepDefinition       = api.StepDefinition
 	StepFunc             = api.StepFunc
 	ConditionFunc        = api.ConditionFunc
 	SelectorFunc         = api.SelectorFunc
@@ -28,17 +30,21 @@ type (
 	BasicMetricsSnapshot = api.BasicMetricsSnapshot
 	CompositeObserver    = api.CompositeObserver
 	NoopObserver         = api.NoopObserver
+	TimeoutPayload       = api.TimeoutPayload
+	ParallelResult       = api.ParallelResult
+	ChildWorkflowSpec    = api.ChildWorkflowSpec
+	Queue                = taskqueue.Queue
+	Worker               = worker.Worker
+	Config               = worker.Config
 )
 
 // Re-export common observer helpers.
-
 var (
 	NewLoggingObserver   = api.NewLoggingObserver
 	NewCompositeObserver = api.NewCompositeObserver
 )
 
 // Re-export status values for convenience.
-
 const (
 	StatusPending   = api.StatusPending
 	StatusRunning   = api.StatusRunning
@@ -136,4 +142,32 @@ func Signal(ctx context.Context, eng Engine, id string, name string, payload any
 //	count, err := fluxo.RecoverStuckInstances(ctx, engine)
 func RecoverStuckInstances(ctx context.Context, eng Engine) (int, error) {
 	return eng.RecoverStuckInstances(ctx)
+}
+
+func NewInMemoryQueue(size int) Queue {
+	return taskqueue.NewInMemoryQueue(size)
+}
+
+func NewSQLiteQueue(db *sql.DB) (Queue, error) {
+	return taskqueue.NewSQLiteQueue(db)
+}
+
+func NewPostgresQueue(db *sql.DB) (Queue, error) {
+	return taskqueue.NewPostgresQueue(db)
+}
+
+func NewRedisQueue(client *redis.Client, prefix string) Queue {
+	return taskqueue.NewRedisQueue(client, prefix)
+}
+
+func NewMongoQueue(client *mongo.Client, dbName, collName string) Queue {
+	return taskqueue.NewMongoQueue(client, dbName, collName)
+}
+
+func NewWorker(engine api.Engine, queue Queue) *Worker {
+	return worker.New(engine, queue)
+}
+
+func NewWorkerWithConfig(engine api.Engine, queue Queue, cfg Config) *Worker {
+	return worker.NewWithConfig(engine, queue, cfg)
 }

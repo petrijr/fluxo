@@ -8,12 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/petrijr/fluxo/internal/engine"
+	"github.com/petrijr/fluxo"
 	_ "modernc.org/sqlite"
-
-	"github.com/petrijr/fluxo/internal/taskqueue"
-	"github.com/petrijr/fluxo/pkg/api"
-	"github.com/petrijr/fluxo/pkg/worker"
 )
 
 // ApprovalRequest is the input to the approval workflow.
@@ -39,17 +35,17 @@ func main() {
 	}
 	defer db.Close()
 
-	eng, err := engine.NewSQLiteEngine(db)
+	eng, err := fluxo.NewSQLiteEngine(db)
 	if err != nil {
 		panic(err)
 	}
 
-	queue, err := taskqueue.NewSQLiteQueue(db)
+	queue, err := fluxo.NewSQLiteQueue(db)
 	if err != nil {
 		panic(err)
 	}
 
-	w := worker.NewWithConfig(eng, queue, worker.Config{
+	w := fluxo.NewWorkerWithConfig(eng, queue, fluxo.Config{
 		MaxAttempts:          3,
 		Backoff:              200 * time.Millisecond,
 		DefaultSignalTimeout: 1 * time.Second, // auto-timeout after 1s
@@ -77,10 +73,10 @@ func main() {
 //
 // finalize inspects whether the input is a TimeoutPayload or a
 // real approval payload.
-func registerApprovalWorkflow(engine api.Engine) error {
-	wf := api.WorkflowDefinition{
+func registerApprovalWorkflow(engine fluxo.Engine) error {
+	wf := fluxo.WorkflowDefinition{
 		Name: "purchase-approval",
-		Steps: []api.StepDefinition{
+		Steps: []fluxo.StepDefinition{
 			{
 				Name: "prepare",
 				Fn: func(ctx context.Context, input any) (any, error) {
@@ -96,13 +92,13 @@ func registerApprovalWorkflow(engine api.Engine) error {
 			},
 			{
 				Name: "wait-approval",
-				Fn:   api.WaitForSignalStep("approve"),
+				Fn:   fluxo.WaitForSignalStep("approve"),
 			},
 			{
 				Name: "finalize",
 				Fn: func(ctx context.Context, input any) (any, error) {
 					switch v := input.(type) {
-					case api.TimeoutPayload:
+					case fluxo.TimeoutPayload:
 						fmt.Printf("[finalize] request timed out: %s\n", v.Reason)
 						return "timeout:" + v.Reason, nil
 					case string:
@@ -122,7 +118,7 @@ func registerApprovalWorkflow(engine api.Engine) error {
 //   - Enqueues a start-workflow task.
 //   - First ProcessOne runs workflow until wait-approval and schedules a timeout signal.
 //   - Second ProcessOne blocks until timeout, delivers the timeout signal, and completes the workflow.
-func runAutoTimeoutScenario(ctx context.Context, engine api.Engine, w *worker.Worker) error {
+func runAutoTimeoutScenario(ctx context.Context, engine fluxo.Engine, w *fluxo.Worker) error {
 	req := ApprovalRequest{
 		RequestID: "REQ-001",
 		Requester: "Alice",
@@ -145,7 +141,7 @@ func runAutoTimeoutScenario(ctx context.Context, engine api.Engine, w *worker.Wo
 		return errors.New("expected first task to be processed")
 	}
 
-	instances, err := engine.ListInstances(ctx, api.InstanceListOptions{
+	instances, err := engine.ListInstances(ctx, fluxo.InstanceListOptions{
 		WorkflowName: "purchase-approval",
 	})
 	if err != nil {
@@ -154,7 +150,7 @@ func runAutoTimeoutScenario(ctx context.Context, engine api.Engine, w *worker.Wo
 	if len(instances) != 1 {
 		return fmt.Errorf("expected 1 instance after first run, got %d", len(instances))
 	}
-	if instances[0].Status != api.StatusWaiting {
+	if instances[0].Status != fluxo.StatusWaiting {
 		return fmt.Errorf("expected WAITING, got %s", instances[0].Status)
 	}
 	fmt.Printf("[main] instance %s is WAITING for approval\n", instances[0].ID)
@@ -171,7 +167,7 @@ func runAutoTimeoutScenario(ctx context.Context, engine api.Engine, w *worker.Wo
 		return errors.New("expected timeout signal task to be processed")
 	}
 
-	instances, err = engine.ListInstances(ctx, api.InstanceListOptions{
+	instances, err = engine.ListInstances(ctx, fluxo.InstanceListOptions{
 		WorkflowName: "purchase-approval",
 	})
 	if err != nil {
@@ -193,7 +189,7 @@ func runAutoTimeoutScenario(ctx context.Context, engine api.Engine, w *worker.Wo
 //   - Before the timeout fires, main enqueues a manual approval signal.
 //   - Second ProcessOne delivers the approval signal and completes the workflow.
 //   - The later timeout signal (if still in the queue) becomes a no-op.
-func runManualApprovalScenario(ctx context.Context, engine api.Engine, w *worker.Worker) error {
+func runManualApprovalScenario(ctx context.Context, engine fluxo.Engine, w *fluxo.Worker) error {
 	req := ApprovalRequest{
 		RequestID: "REQ-002",
 		Requester: "Bob",
@@ -214,7 +210,7 @@ func runManualApprovalScenario(ctx context.Context, engine api.Engine, w *worker
 		return errors.New("expected first task to be processed")
 	}
 
-	instances, err := engine.ListInstances(ctx, api.InstanceListOptions{
+	instances, err := engine.ListInstances(ctx, fluxo.InstanceListOptions{
 		WorkflowName: "purchase-approval",
 	})
 	if err != nil {
@@ -225,9 +221,9 @@ func runManualApprovalScenario(ctx context.Context, engine api.Engine, w *worker
 	}
 
 	// Pick the most recent waiting instance.
-	var waiting *api.WorkflowInstance
+	var waiting *fluxo.WorkflowInstance
 	for _, inst := range instances {
-		if inst.Status == api.StatusWaiting {
+		if inst.Status == fluxo.StatusWaiting {
 			instCopy := inst
 			waiting = instCopy
 			break
@@ -254,7 +250,7 @@ func runManualApprovalScenario(ctx context.Context, engine api.Engine, w *worker
 		return errors.New("expected approval signal task to be processed")
 	}
 
-	instances, err = engine.ListInstances(ctx, api.InstanceListOptions{
+	instances, err = engine.ListInstances(ctx, fluxo.InstanceListOptions{
 		WorkflowName: "purchase-approval",
 	})
 	if err != nil {
@@ -265,9 +261,9 @@ func runManualApprovalScenario(ctx context.Context, engine api.Engine, w *worker
 	}
 
 	// Find the completed instance from this scenario.
-	var completed *api.WorkflowInstance
+	var completed *fluxo.WorkflowInstance
 	for _, inst := range instances {
-		if inst.Status == api.StatusCompleted {
+		if inst.Status == fluxo.StatusCompleted {
 			instCopy := inst
 			completed = instCopy
 			break

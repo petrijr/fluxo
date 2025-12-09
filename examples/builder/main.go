@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/petrijr/fluxo"
-	"github.com/petrijr/fluxo/pkg/api"
 )
 
 type State struct {
@@ -115,7 +114,7 @@ func writeAuditLog(ctx context.Context, input any) (any, error) {
 }
 
 func finalizeOnboarding(ctx context.Context, input any) (any, error) {
-	states, ok := input.([]api.ParallelResult)
+	states, ok := input.([]fluxo.ParallelResult)
 	if !ok {
 		return nil, fmt.Errorf("finalize-onboarding: unexpected input %T", input)
 	}
