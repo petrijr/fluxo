@@ -27,7 +27,7 @@ type MongoDBStoreTestSuite struct {
 func TestMongoDBTestSuite(t *testing.T) {
 	gob.Register(mongoSamplePayload{})
 	testsuite := new(MongoDBStoreTestSuite)
-	testsuite.endpoint = testutil.StartMongoContainer(t)
+	testsuite.endpoint = testutil.GetMongoURI(t)
 	newTestMongoStore(t, testsuite)
 	suite.Run(t, testsuite)
 }

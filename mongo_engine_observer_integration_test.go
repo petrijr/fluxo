@@ -26,7 +26,7 @@ func TestMongoEngineWithObserverAndBasicMetrics(t *testing.T) {
 	t.Parallel()
 
 	// Spin up a throwaway MongoDB instance for the duration of the test.
-	uri := testutil.StartMongoContainer(t)
+	uri := testutil.GetMongoURI(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

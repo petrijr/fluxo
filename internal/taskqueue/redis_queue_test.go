@@ -20,7 +20,7 @@ type RedisQueueTestSuite struct {
 
 func TestRedisQueueSuite(t *testing.T) {
 	testsuite := new(RedisQueueTestSuite)
-	testsuite.endpoint = testutil.StartRedisContainer(t)
+	testsuite.endpoint = testutil.GetRedisAddress(t)
 	initTestRedisQueue(t, testsuite)
 	suite.Run(t, testsuite)
 }

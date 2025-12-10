@@ -24,7 +24,7 @@ type MongoQueueTestSuite struct {
 
 func TestMongoQueueTestSuite(t *testing.T) {
 	testsuite := new(MongoQueueTestSuite)
-	testsuite.endpoint = testutil.StartMongoContainer(t)
+	testsuite.endpoint = testutil.GetMongoURI(t)
 	initTestMongoQueue(t, testsuite)
 	suite.Run(t, testsuite)
 }

@@ -25,7 +25,7 @@ type RedisStoreTestSuite struct {
 func TestRedisTestSuite(t *testing.T) {
 	gob.Register(redisSamplePayload{})
 	testsuite := new(RedisStoreTestSuite)
-	testsuite.endpoint = testutil.StartRedisContainer(t)
+	testsuite.endpoint = testutil.GetRedisAddress(t)
 	initTestRedisStore(t, testsuite)
 	suite.Run(t, testsuite)
 }

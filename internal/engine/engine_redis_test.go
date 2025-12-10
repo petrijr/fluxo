@@ -10,7 +10,7 @@ import (
 )
 
 func TestRedisEngine_SequentialWorkflow(t *testing.T) {
-	endpoint := testutil.StartRedisContainer(t)
+	endpoint := testutil.GetRedisAddress(t)
 	client := redis.NewClient(&redis.Options{
 		Addr: endpoint,
 	})
