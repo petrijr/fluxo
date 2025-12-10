@@ -11,7 +11,7 @@ import (
 )
 
 func TestPostgresEngine_SequentialWorkflow(t *testing.T) {
-	endpoint := testutil.StartPostgreSQLContainer(t)
+	endpoint := testutil.StartPostgresContainer(t)
 	db, err := sql.Open("pgx", endpoint)
 	if err != nil {
 		t.Fatalf("sql.Open failed: %v", err)

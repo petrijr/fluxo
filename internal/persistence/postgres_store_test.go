@@ -27,7 +27,7 @@ type PostgresStoreTestSuite struct {
 func TestPostgreSQLTestSuite(t *testing.T) {
 	gob.Register(pgSamplePayload{})
 	testsuite := new(PostgresStoreTestSuite)
-	testsuite.endpoint = testutil.StartPostgreSQLContainer(t)
+	testsuite.endpoint = testutil.StartPostgresContainer(t)
 	initTestPostgresStore(t, testsuite)
 	suite.Run(t, testsuite)
 }

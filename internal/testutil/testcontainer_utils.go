@@ -12,7 +12,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-func StartPostgreSQLContainer(t *testing.T) string {
+func StartPostgresContainer(t *testing.T) string {
 	// Give generous timeout in CI environments
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	t.Cleanup(cancel)
@@ -47,7 +47,7 @@ func StartPostgreSQLContainer(t *testing.T) string {
 	return fmt.Sprintf("postgres://fluxo:fluxo@%s/fluxo_test?sslmode=disable", endpoint)
 }
 
-func StartMongoDBContainer(t *testing.T) string {
+func StartMongoContainer(t *testing.T) string {
 	ctx := context.Background()
 	mongoC, err := testcontainers.Run(
 		ctx, "mongo:7",

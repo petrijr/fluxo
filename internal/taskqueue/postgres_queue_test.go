@@ -20,7 +20,7 @@ type PostgresQueueTestSuite struct {
 
 func TestPostgresQueueSuite(t *testing.T) {
 	testsuite := new(PostgresQueueTestSuite)
-	testsuite.endpoint = testutil.StartPostgreSQLContainer(t)
+	testsuite.endpoint = testutil.StartPostgresContainer(t)
 	initTestPostgresQueue(t, testsuite)
 	suite.Run(t, testsuite)
 }

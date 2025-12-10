@@ -347,6 +347,10 @@ func ParallelStep(steps ...StepFunc) StepFunc {
 			return input, nil
 		}
 
+		// Use a cancelable child context to stop siblings promptly on first error/panic.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
 		results := make([]ParallelResult, len(steps))
 		var wg sync.WaitGroup
 		var firstErr error
@@ -366,24 +370,27 @@ func ParallelStep(steps ...StepFunc) StepFunc {
 			}
 
 			wg.Add(1)
-			go func() {
+			go func(i int, step StepFunc) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						errOnce.Do(func() { firstErr = fmt.Errorf("panic in ParallelStep[%d]: %v", i, r) })
+						cancel()
+					}
+				}()
 
 				// Early abort if context already cancelled.
 				select {
 				case <-ctx.Done():
-					errOnce.Do(func() {
-						firstErr = ctx.Err()
-					})
+					errOnce.Do(func() { firstErr = ctx.Err() })
 					return
 				default:
 				}
 
 				out, err := step(ctx, input)
 				if err != nil {
-					errOnce.Do(func() {
-						firstErr = err
-					})
+					errOnce.Do(func() { firstErr = err })
+					cancel()
 					return
 				}
 				results[i] = ParallelResult{
@@ -391,7 +398,7 @@ func ParallelStep(steps ...StepFunc) StepFunc {
 					Value: out,
 					Err:   nil,
 				}
-			}()
+			}(i, step)
 		}
 
 		wg.Wait()
@@ -436,6 +443,10 @@ func ParallelMapStep(fn StepFunc) StepFunc {
 			return []any{}, nil
 		}
 
+		// Use a cancelable child context to stop siblings promptly on first error/panic.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
 		results := make([]any, n)
 		var wg sync.WaitGroup
 		var firstErr error
@@ -446,27 +457,30 @@ func ParallelMapStep(fn StepFunc) StepFunc {
 			item := v.Index(i).Interface()
 
 			wg.Add(1)
-			go func() {
+			go func(i int, item any) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						errOnce.Do(func() { firstErr = fmt.Errorf("panic in ParallelMapStep[%d]: %v", i, r) })
+						cancel()
+					}
+				}()
 
 				select {
 				case <-ctx.Done():
-					errOnce.Do(func() {
-						firstErr = ctx.Err()
-					})
+					errOnce.Do(func() { firstErr = ctx.Err() })
 					return
 				default:
 				}
 
 				out, err := fn(ctx, item)
 				if err != nil {
-					errOnce.Do(func() {
-						firstErr = err
-					})
+					errOnce.Do(func() { firstErr = err })
+					cancel()
 					return
 				}
 				results[i] = out
-			}()
+			}(i, item)
 		}
 
 		wg.Wait()

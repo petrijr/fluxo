@@ -69,6 +69,16 @@ func (q *PostgresQueue) Enqueue(ctx context.Context, t Task) error {
 //     a single row, then DELETEs it in the same transaction.
 //   - If no rows are available, sleeps briefly and retries, checking ctx.
 func (q *PostgresQueue) Dequeue(ctx context.Context) (*Task, error) {
+	// Use a reusable timer to avoid allocating a new timer on every idle poll.
+	tmr := time.NewTimer(0)
+	if !tmr.Stop() {
+		select {
+		case <-tmr.C:
+		default:
+		}
+	}
+	defer tmr.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -98,13 +108,14 @@ func (q *PostgresQueue) Dequeue(ctx context.Context) (*Task, error) {
 		if err != nil {
 			_ = tx.Rollback()
 			if err == sql.ErrNoRows {
-				// Nothing available yet – wait a bit and retry.
+				// Nothing available yet – wait a bit and retry using reusable timer.
+				tmr.Reset(100 * time.Millisecond)
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(100 * time.Millisecond):
-					continue
+				case <-tmr.C:
 				}
+				continue
 			}
 			return nil, err
 		}

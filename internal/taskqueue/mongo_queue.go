@@ -85,6 +85,17 @@ func (q *MongoQueue) Enqueue(ctx context.Context, t Task) error {
 
 // Dequeue blocks (via polling) until a task is available or ctx is cancelled.
 func (q *MongoQueue) Dequeue(ctx context.Context) (*Task, error) {
+	// Use a reusable timer to avoid allocating a new timer on every idle poll.
+	// Initialize stopped; reset only when needed.
+	tmr := time.NewTimer(0)
+	if !tmr.Stop() {
+		select {
+		case <-tmr.C:
+		default:
+		}
+	}
+	defer tmr.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -103,13 +114,14 @@ func (q *MongoQueue) Dequeue(ctx context.Context) (*Task, error) {
 
 		if err != nil {
 			if errors.Is(err, mongo.ErrNoDocuments) {
-				// No tasks yet, wait a bit.
+				// No tasks yet, wait a bit using a reusable timer.
+				tmr.Reset(100 * time.Millisecond)
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(100 * time.Millisecond):
-					continue
+				case <-tmr.C:
 				}
+				continue
 			}
 			return nil, err
 		}
