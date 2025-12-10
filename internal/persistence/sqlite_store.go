@@ -49,17 +49,17 @@ func (s *SQLiteInstanceStore) initSchema() error {
 }
 
 func (s *SQLiteInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
-	input, err := encodeValue(inst.Input)
+	input, err := EncodeValue(inst.Input)
 	if err != nil {
 		return err
 	}
 
-	output, err := encodeValue(inst.Output)
+	output, err := EncodeValue(inst.Output)
 	if err != nil {
 		return err
 	}
 
-	stepResults, err := encodeValue(inst.StepResults)
+	stepResults, err := EncodeValue(inst.StepResults)
 	if err != nil {
 		return err
 	}
@@ -85,17 +85,17 @@ func (s *SQLiteInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 }
 
 func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
-	input, err := encodeValue(inst.Input)
+	input, err := EncodeValue(inst.Input)
 	if err != nil {
 		return err
 	}
 
-	output, err := encodeValue(inst.Output)
+	output, err := EncodeValue(inst.Output)
 	if err != nil {
 		return err
 	}
 
-	stepResults, err := encodeValue(inst.StepResults)
+	stepResults, err := EncodeValue(inst.StepResults)
 	if err != nil {
 		return err
 	}
@@ -157,19 +157,19 @@ func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, err
 	inst.Status = api.Status(statusStr)
 	inst.CurrentStep = currentStep
 
-	inVal, err := decodeValue[any](input)
+	inVal, err := DecodeValue[any](input)
 	if err != nil {
 		return nil, err
 	}
 	inst.Input = inVal
 
-	outVal, err := decodeValue[any](output)
+	outVal, err := DecodeValue[any](output)
 	if err != nil {
 		return nil, err
 	}
 	inst.Output = outVal
 
-	stepResultsVal, err := decodeValue[map[int]any](stepResults)
+	stepResultsVal, err := DecodeValue[map[int]any](stepResults)
 	if err != nil {
 		return nil, err
 	}
@@ -222,19 +222,19 @@ func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Workf
 
 		inst.Status = api.Status(statusStr)
 
-		inVal, err := decodeValue[any](input)
+		inVal, err := DecodeValue[any](input)
 		if err != nil {
 			return nil, err
 		}
 		inst.Input = inVal
 
-		outVal, err := decodeValue[any](output)
+		outVal, err := DecodeValue[any](output)
 		if err != nil {
 			return nil, err
 		}
 		inst.Output = outVal
 
-		stepResultsVal, err := decodeValue[map[int]any](stepResults)
+		stepResultsVal, err := DecodeValue[map[int]any](stepResults)
 		if err != nil {
 			return nil, err
 		}

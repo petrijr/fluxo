@@ -1,4 +1,4 @@
-package fluxo
+package mongo
 
 import (
 	"context"
@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/petrijr/fluxo/internal/testutil"
+	"github.com/petrijr/fluxo"
+	"github.com/petrijr/fluxo/mongo/internal/testutil"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -37,15 +38,19 @@ func TestMongoEngineWithObserverAndBasicMetrics(t *testing.T) {
 		_ = client.Disconnect(context.Background())
 	})
 
-	metrics := &BasicMetrics{}
+	// 🔑 Ensure we start with a clean collection so IDs like "wf-1" don't collide
+	coll := client.Database("fluxo").Collection("instances")
+	_ = coll.Drop(ctx)
+
+	metrics := &fluxo.BasicMetrics{}
 
 	// Use a real slog.Logger, but discard output so tests stay quiet.
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 
-	observer := NewCompositeObserver(
-		NewLoggingObserver(logger),
+	observer := fluxo.NewCompositeObserver(
+		fluxo.NewLoggingObserver(logger),
 		metrics,
 	)
 
@@ -54,7 +59,7 @@ func TestMongoEngineWithObserverAndBasicMetrics(t *testing.T) {
 	engine := NewMongoEngineWithObserver(client, observer)
 
 	// Define a simple 2-step workflow.
-	flow := New("mongo-metrics-workflow").
+	flow := fluxo.New("mongo-metrics-workflow").
 		Step("first", func(ctx context.Context, input any) (any, error) {
 			time.Sleep(1 * time.Millisecond)
 			return "ok", nil
@@ -67,10 +72,10 @@ func TestMongoEngineWithObserverAndBasicMetrics(t *testing.T) {
 
 	require.NoError(t, flow.Register(engine), "Register should succeed")
 
-	inst, err := Run(ctx, engine, flow.Name(), nil)
+	inst, err := fluxo.Run(ctx, engine, flow.Name(), nil)
 	require.NoError(t, err, "Run should succeed")
 	require.NotNil(t, inst, "instance should not be nil")
-	require.Equal(t, StatusCompleted, inst.Status, "workflow should complete successfully")
+	require.Equal(t, fluxo.StatusCompleted, inst.Status, "workflow should complete successfully")
 
 	snap := metrics.Snapshot()
 

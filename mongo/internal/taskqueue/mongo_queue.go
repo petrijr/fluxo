@@ -8,6 +8,8 @@ import (
 	"log"
 	"time"
 
+	coreq "github.com/petrijr/fluxo/internal/taskqueue"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -41,7 +43,7 @@ func NewMongoQueue(client *mongo.Client, dbName, collName string) *MongoQueue {
 }
 
 // Ensure MongoQueue implements Queue.
-var _ Queue = (*MongoQueue)(nil)
+var _ coreq.Queue = (*MongoQueue)(nil)
 
 type mongoQueueDoc struct {
 	ID        string    `bson:"_id"`
@@ -50,7 +52,7 @@ type mongoQueueDoc struct {
 }
 
 // These are named differently to avoid clashing with any other encodeTask/decodeTask.
-func mongoEncodeTask(t Task) ([]byte, error) {
+func mongoEncodeTask(t coreq.Task) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(&t); err != nil {
 		return nil, err
@@ -58,8 +60,8 @@ func mongoEncodeTask(t Task) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func mongoDecodeTask(data []byte) (*Task, error) {
-	var t Task
+func mongoDecodeTask(data []byte) (*coreq.Task, error) {
+	var t coreq.Task
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&t); err != nil {
 		return nil, err
 	}
@@ -67,7 +69,7 @@ func mongoDecodeTask(data []byte) (*Task, error) {
 }
 
 // Enqueue inserts a document for the given Task.
-func (q *MongoQueue) Enqueue(ctx context.Context, t Task) error {
+func (q *MongoQueue) Enqueue(ctx context.Context, t coreq.Task) error {
 	data, err := mongoEncodeTask(t)
 	if err != nil {
 		return err
@@ -84,7 +86,7 @@ func (q *MongoQueue) Enqueue(ctx context.Context, t Task) error {
 }
 
 // Dequeue blocks (via polling) until a task is available or ctx is cancelled.
-func (q *MongoQueue) Dequeue(ctx context.Context) (*Task, error) {
+func (q *MongoQueue) Dequeue(ctx context.Context) (*coreq.Task, error) {
 	// Use a reusable timer to avoid allocating a new timer on every idle poll.
 	// Initialize stopped; reset only when needed.
 	tmr := time.NewTimer(0)

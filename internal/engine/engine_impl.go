@@ -10,8 +10,6 @@ import (
 
 	"github.com/petrijr/fluxo/internal/persistence"
 	"github.com/petrijr/fluxo/pkg/api"
-	"github.com/redis/go-redis/v9"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // engineImpl is a simple, synchronous, in-process engine implementation.
@@ -65,65 +63,6 @@ func NewSQLiteEngineWithObserver(db *sql.DB, obs api.Observer) (api.Engine, erro
 		},
 		Observer: obs,
 	}), nil
-}
-
-func NewPostgresEngine(db *sql.DB) (api.Engine, error) {
-	return NewPostgresEngineWithObserver(db, nil)
-}
-
-func NewPostgresEngineWithObserver(db *sql.DB, obs api.Observer) (api.Engine, error) {
-	inst, err := persistence.NewPostgresInstanceStore(db)
-	if err != nil {
-		return nil, err
-	}
-	// Workflow definitions remain in-memory, just like SQLite.
-	memWF := persistence.NewInMemoryStore()
-
-	return NewEngineWithConfig(Config{
-		Persistence: persistence.Persistence{
-			Workflows: memWF,
-			Instances: inst,
-		},
-		Observer: obs,
-	}), nil
-}
-
-// NewRedisEngine creates an engine that uses Redis for instance persistence
-// and task queue (if your engine wiring supports pluggable queues).
-func NewRedisEngine(client *redis.Client) api.Engine {
-	return NewRedisEngineWithObserver(client, nil)
-}
-
-func NewRedisEngineWithObserver(client *redis.Client, obs api.Observer) api.Engine {
-	instStore := persistence.NewRedisInstanceStore(client, "fluxo:")
-	memWF := persistence.NewInMemoryStore()
-
-	// If your engine has a way to pass the queue in, hook it up here.
-	// For now, we only swap Instances and keep the same queue as before.
-	return NewEngineWithConfig(Config{
-		Persistence: persistence.Persistence{
-			Workflows: memWF,
-			Instances: instStore,
-		},
-		Observer: obs,
-	})
-}
-
-func NewMongoEngine(client *mongo.Client) api.Engine {
-	return NewMongoEngineWithObserver(client, nil)
-}
-
-func NewMongoEngineWithObserver(client *mongo.Client, obs api.Observer) api.Engine {
-	instStore := persistence.NewMongoInstanceStore(client, "", "")
-	memWF := persistence.NewInMemoryStore()
-
-	return NewEngineWithConfig(Config{
-		Persistence: persistence.Persistence{
-			Workflows: memWF,
-			Instances: instStore,
-		},
-		Observer: obs,
-	})
 }
 
 // NewEngineWithConfig creates a new Engine using the given configuration.

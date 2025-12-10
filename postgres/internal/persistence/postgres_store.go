@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	corep "github.com/petrijr/fluxo/internal/persistence"
 	"github.com/petrijr/fluxo/pkg/api"
 )
 
@@ -23,7 +24,7 @@ type PostgresInstanceStore struct {
 }
 
 // Ensure PostgresInstanceStore implements InstanceStore.
-var _ InstanceStore = (*PostgresInstanceStore)(nil)
+var _ corep.InstanceStore = (*PostgresInstanceStore)(nil)
 
 // NewPostgresInstanceStore initializes the required schema in the given
 // database and returns a new PostgresInstanceStore.
@@ -52,17 +53,17 @@ func (s *PostgresInstanceStore) initSchema() error {
 }
 
 func (s *PostgresInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
-	input, err := encodeValue(inst.Input)
+	input, err := corep.EncodeValue(inst.Input)
 	if err != nil {
 		return err
 	}
 
-	output, err := encodeValue(inst.Output)
+	output, err := corep.EncodeValue(inst.Output)
 	if err != nil {
 		return err
 	}
 
-	stepResults, err := encodeValue(inst.StepResults)
+	stepResults, err := corep.EncodeValue(inst.StepResults)
 	if err != nil {
 		return err
 	}
@@ -89,17 +90,17 @@ func (s *PostgresInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 }
 
 func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
-	input, err := encodeValue(inst.Input)
+	input, err := corep.EncodeValue(inst.Input)
 	if err != nil {
 		return err
 	}
 
-	output, err := encodeValue(inst.Output)
+	output, err := corep.EncodeValue(inst.Output)
 	if err != nil {
 		return err
 	}
 
-	stepResults, err := encodeValue(inst.StepResults)
+	stepResults, err := corep.EncodeValue(inst.StepResults)
 	if err != nil {
 		return err
 	}
@@ -138,7 +139,7 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 		return err
 	}
 	if affected == 0 {
-		return ErrInstanceNotFound
+		return corep.ErrInstanceNotFound
 	}
 
 	return nil
@@ -161,7 +162,7 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 
 	if err := row.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrInstanceNotFound
+			return nil, corep.ErrInstanceNotFound
 		}
 		return nil, err
 	}
@@ -169,19 +170,19 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 	inst.Status = api.Status(statusStr)
 	inst.CurrentStep = currentStep
 
-	inVal, err := decodeValue[any](input)
+	inVal, err := corep.DecodeValue[any](input)
 	if err != nil {
 		return nil, err
 	}
 	inst.Input = inVal
 
-	outVal, err := decodeValue[any](output)
+	outVal, err := corep.DecodeValue[any](output)
 	if err != nil {
 		return nil, err
 	}
 	inst.Output = outVal
 
-	stepResultsVal, err := decodeValue[map[int]any](stepResults)
+	stepResultsVal, err := corep.DecodeValue[map[int]any](stepResults)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +195,7 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 	return &inst, nil
 }
 
-func (s *PostgresInstanceStore) ListInstances(filter InstanceFilter) ([]*api.WorkflowInstance, error) {
+func (s *PostgresInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.WorkflowInstance, error) {
 	query := `
 		SELECT id, workflow_name, status, current_step, input, output, step_results, error
 		FROM instances`
@@ -236,19 +237,19 @@ func (s *PostgresInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Wor
 		inst.Status = api.Status(statusStr)
 		inst.CurrentStep = currentStep
 
-		inVal, err := decodeValue[any](input)
+		inVal, err := corep.DecodeValue[any](input)
 		if err != nil {
 			return nil, err
 		}
 		inst.Input = inVal
 
-		outVal, err := decodeValue[any](output)
+		outVal, err := corep.DecodeValue[any](output)
 		if err != nil {
 			return nil, err
 		}
 		inst.Output = outVal
 
-		stepResultsVal, err := decodeValue[map[int]any](stepResults)
+		stepResultsVal, err := corep.DecodeValue[map[int]any](stepResults)
 		if err != nil {
 			return nil, err
 		}

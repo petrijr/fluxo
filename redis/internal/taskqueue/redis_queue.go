@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 
+	coreq "github.com/petrijr/fluxo/internal/taskqueue"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -32,11 +33,11 @@ func NewRedisQueue(client *redis.Client, prefix string) *RedisQueue {
 }
 
 // Ensure RedisQueue implements Queue.
-var _ Queue = (*RedisQueue)(nil)
+var _ coreq.Queue = (*RedisQueue)(nil)
 
 // Enqueue pushes a task onto the Redis list (LPUSH).
-func (q *RedisQueue) Enqueue(ctx context.Context, t Task) error {
-	data, err := encodeTask(t)
+func (q *RedisQueue) Enqueue(ctx context.Context, t coreq.Task) error {
+	data, err := coreq.EncodeTask(t)
 	if err != nil {
 		return err
 	}
@@ -44,7 +45,7 @@ func (q *RedisQueue) Enqueue(ctx context.Context, t Task) error {
 }
 
 // Dequeue blocks on BRPOP until a task is available or ctx is cancelled.
-func (q *RedisQueue) Dequeue(ctx context.Context) (*Task, error) {
+func (q *RedisQueue) Dequeue(ctx context.Context) (*coreq.Task, error) {
 	// BRPop returns [key, value]
 	res, err := q.client.BRPop(ctx, 0, q.key).Result()
 	if err != nil {
@@ -58,7 +59,7 @@ func (q *RedisQueue) Dequeue(ctx context.Context) (*Task, error) {
 	}
 
 	data := []byte(res[1])
-	return decodeTask(data)
+	return coreq.DecodeTask(data)
 }
 
 // Len returns the approximate number of tasks queued (LLEN).

@@ -5,8 +5,8 @@ import (
 	"encoding/gob"
 )
 
-// encodeTask gob-encodes a Task.
-func encodeTask(t Task) ([]byte, error) {
+// EncodeTask gob-encodes a Task.
+func EncodeTask(t Task) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(&t); err != nil {
 		return nil, err
@@ -14,8 +14,8 @@ func encodeTask(t Task) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decodeTask gob-decodes a Task.
-func decodeTask(data []byte) (*Task, error) {
+// DecodeTask gob-decodes a Task.
+func DecodeTask(data []byte) (*Task, error) {
 	var t Task
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&t); err != nil {
 		return nil, err

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	coreq "github.com/petrijr/fluxo/internal/taskqueue"
 )
 
 // PostgresQueue implements Queue using a PostgreSQL table.
@@ -33,7 +35,7 @@ func NewPostgresQueue(db *sql.DB) (*PostgresQueue, error) {
 }
 
 // Ensure PostgresQueue implements Queue.
-var _ Queue = (*PostgresQueue)(nil)
+var _ coreq.Queue = (*PostgresQueue)(nil)
 
 func (q *PostgresQueue) initSchema() error {
 	_, err := q.db.Exec(`
@@ -47,8 +49,8 @@ func (q *PostgresQueue) initSchema() error {
 }
 
 // Enqueue inserts a task into the queue.
-func (q *PostgresQueue) Enqueue(ctx context.Context, t Task) error {
-	data, err := encodeTask(t)
+func (q *PostgresQueue) Enqueue(ctx context.Context, t coreq.Task) error {
+	data, err := coreq.EncodeTask(t)
 	if err != nil {
 		return err
 	}
@@ -68,7 +70,7 @@ func (q *PostgresQueue) Enqueue(ctx context.Context, t Task) error {
 //   - Uses SELECT ... FOR UPDATE SKIP LOCKED in a transaction to safely claim
 //     a single row, then DELETEs it in the same transaction.
 //   - If no rows are available, sleeps briefly and retries, checking ctx.
-func (q *PostgresQueue) Dequeue(ctx context.Context) (*Task, error) {
+func (q *PostgresQueue) Dequeue(ctx context.Context) (*coreq.Task, error) {
 	// Use a reusable timer to avoid allocating a new timer on every idle poll.
 	tmr := time.NewTimer(0)
 	if !tmr.Stop() {
@@ -133,7 +135,7 @@ func (q *PostgresQueue) Dequeue(ctx context.Context) (*Task, error) {
 			return nil, err
 		}
 
-		task, err := decodeTask(payload)
+		task, err := coreq.DecodeTask(payload)
 		if err != nil {
 			return nil, fmt.Errorf("decode task %q failed: %w", id, err)
 		}

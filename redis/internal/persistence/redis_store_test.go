@@ -6,8 +6,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/petrijr/fluxo/internal/testutil"
+	corep "github.com/petrijr/fluxo/internal/persistence"
 	"github.com/petrijr/fluxo/pkg/api"
+	"github.com/petrijr/fluxo/redis/internal/testutil"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/suite"
 )
@@ -17,7 +18,7 @@ const prefix = "fluxo:test:"
 type RedisStoreTestSuite struct {
 	suite.Suite
 	endpoint string
-	store    InstanceStore
+	store    corep.InstanceStore
 	client   *redis.Client
 	ctx      context.Context
 }
@@ -165,19 +166,19 @@ func (r *RedisStoreTestSuite) TestRedisInstanceStore_ListInstancesFilters() {
 	}
 
 	// Unfiltered
-	all, err := r.store.ListInstances(InstanceFilter{})
+	all, err := r.store.ListInstances(corep.InstanceFilter{})
 	r.NoError(err, "ListInstances (no filter) failed: %v", "formatted")
 
 	// Filter by workflow name
-	wfA, err := r.store.ListInstances(InstanceFilter{WorkflowName: "wf-A"})
+	wfA, err := r.store.ListInstances(corep.InstanceFilter{WorkflowName: "wf-A"})
 	r.NoError(err, "ListInstances (wf-A) failed: %v", "formatted")
 
 	// Filter by status
-	completed, err := r.store.ListInstances(InstanceFilter{Status: api.StatusCompleted})
+	completed, err := r.store.ListInstances(corep.InstanceFilter{Status: api.StatusCompleted})
 	r.NoError(err, "ListInstances (COMPLETED) failed: %v", "formatted")
 
 	// Combined filter
-	completedA, err := r.store.ListInstances(InstanceFilter{
+	completedA, err := r.store.ListInstances(corep.InstanceFilter{
 		WorkflowName: "wf-A",
 		Status:       api.StatusCompleted,
 	})

@@ -7,8 +7,9 @@ import (
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
-	"github.com/petrijr/fluxo/internal/testutil"
+	corep "github.com/petrijr/fluxo/internal/persistence"
 	"github.com/petrijr/fluxo/pkg/api"
+	"github.com/petrijr/fluxo/postgres/internal/testutil"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -147,7 +148,7 @@ func (p *PostgresStoreTestSuite) TestPostgresInstanceStore_ListInstancesFilters(
 	}
 
 	// Unfiltered
-	all, err := p.store.ListInstances(InstanceFilter{})
+	all, err := p.store.ListInstances(corep.InstanceFilter{})
 	p.NoError(err, "ListInstances (no filter) failed: %v", "formatted")
 
 	if len(all) != len(instances) {
@@ -155,7 +156,7 @@ func (p *PostgresStoreTestSuite) TestPostgresInstanceStore_ListInstancesFilters(
 	}
 
 	// Filter by workflow name
-	wfA, err := p.store.ListInstances(InstanceFilter{WorkflowName: "wf-A"})
+	wfA, err := p.store.ListInstances(corep.InstanceFilter{WorkflowName: "wf-A"})
 	p.NoError(err, "ListInstances (wf-A) failed: %v", "formatted")
 
 	if len(wfA) != 2 {
@@ -168,7 +169,7 @@ func (p *PostgresStoreTestSuite) TestPostgresInstanceStore_ListInstancesFilters(
 	}
 
 	// Filter by status
-	completed, err := p.store.ListInstances(InstanceFilter{Status: api.StatusCompleted})
+	completed, err := p.store.ListInstances(corep.InstanceFilter{Status: api.StatusCompleted})
 	p.NoErrorf(err, "ListInstances (COMPLETED) failed: %v", "formatted")
 
 	if len(completed) != 2 {
@@ -181,7 +182,7 @@ func (p *PostgresStoreTestSuite) TestPostgresInstanceStore_ListInstancesFilters(
 	}
 
 	// Combined filter
-	completedA, err := p.store.ListInstances(InstanceFilter{
+	completedA, err := p.store.ListInstances(corep.InstanceFilter{
 		WorkflowName: "wf-A",
 		Status:       api.StatusCompleted,
 	})

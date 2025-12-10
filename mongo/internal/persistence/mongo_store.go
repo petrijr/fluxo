@@ -8,6 +8,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 
+	corep "github.com/petrijr/fluxo/internal/persistence"
 	"github.com/petrijr/fluxo/pkg/api"
 )
 
@@ -16,7 +17,7 @@ type MongoInstanceStore struct {
 }
 
 // Ensure it implements InstanceStore.
-var _ InstanceStore = (*MongoInstanceStore)(nil)
+var _ corep.InstanceStore = (*MongoInstanceStore)(nil)
 
 // NewMongoInstanceStore creates a Mongo-backed instance store.
 // dbName defaults to "fluxo" if empty, collName defaults to "instances".
@@ -48,15 +49,15 @@ func (s *MongoInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	inBytes, err := encodeValue(inst.Input)
+	inBytes, err := corep.EncodeValue(inst.Input)
 	if err != nil {
 		return err
 	}
-	outBytes, err := encodeValue(inst.Output)
+	outBytes, err := corep.EncodeValue(inst.Output)
 	if err != nil {
 		return err
 	}
-	stepResultsBytes, err := encodeValue(inst.StepResults)
+	stepResultsBytes, err := corep.EncodeValue(inst.StepResults)
 	if err != nil {
 		return err
 	}
@@ -86,15 +87,15 @@ func (s *MongoInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	inBytes, err := encodeValue(inst.Input)
+	inBytes, err := corep.EncodeValue(inst.Input)
 	if err != nil {
 		return err
 	}
-	outBytes, err := encodeValue(inst.Output)
+	outBytes, err := corep.EncodeValue(inst.Output)
 	if err != nil {
 		return err
 	}
-	stepResultsBytes, err := encodeValue(inst.StepResults)
+	stepResultsBytes, err := corep.EncodeValue(inst.StepResults)
 	if err != nil {
 		return err
 	}
@@ -121,7 +122,7 @@ func (s *MongoInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 		return err
 	}
 	if res.MatchedCount == 0 {
-		return ErrInstanceNotFound
+		return corep.ErrInstanceNotFound
 	}
 	return nil
 }
@@ -134,20 +135,20 @@ func (s *MongoInstanceStore) GetInstance(id string) (*api.WorkflowInstance, erro
 	err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, ErrInstanceNotFound
+			return nil, corep.ErrInstanceNotFound
 		}
 		return nil, err
 	}
 
-	inVal, err := decodeValue[any](doc.Input)
+	inVal, err := corep.DecodeValue[any](doc.Input)
 	if err != nil {
 		return nil, err
 	}
-	outVal, err := decodeValue[any](doc.Output)
+	outVal, err := corep.DecodeValue[any](doc.Output)
 	if err != nil {
 		return nil, err
 	}
-	stepResultsVal, err := decodeValue[map[int]any](doc.StepResults)
+	stepResultsVal, err := corep.DecodeValue[map[int]any](doc.StepResults)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +168,7 @@ func (s *MongoInstanceStore) GetInstance(id string) (*api.WorkflowInstance, erro
 	return inst, nil
 }
 
-func (s *MongoInstanceStore) ListInstances(filter InstanceFilter) ([]*api.WorkflowInstance, error) {
+func (s *MongoInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.WorkflowInstance, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -193,15 +194,15 @@ func (s *MongoInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Workfl
 			return nil, err
 		}
 
-		inVal, err := decodeValue[any](doc.Input)
+		inVal, err := corep.DecodeValue[any](doc.Input)
 		if err != nil {
 			return nil, err
 		}
-		outVal, err := decodeValue[any](doc.Output)
+		outVal, err := corep.DecodeValue[any](doc.Output)
 		if err != nil {
 			return nil, err
 		}
-		stepResultsVal, err := decodeValue[map[int]any](doc.StepResults)
+		stepResultsVal, err := corep.DecodeValue[map[int]any](doc.StepResults)
 		if err != nil {
 			return nil, err
 		}

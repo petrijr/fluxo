@@ -7,7 +7,8 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
-	"github.com/petrijr/fluxo/internal/testutil"
+	coreq "github.com/petrijr/fluxo/internal/taskqueue"
+	"github.com/petrijr/fluxo/postgres/internal/testutil"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -54,7 +55,7 @@ func (p *PostgresQueueTestSuite) TestPostgresQueue_EnqueueDequeue() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tasksCh := make(chan *Task, 1)
+	tasksCh := make(chan *coreq.Task, 1)
 	errCh := make(chan error, 1)
 
 	// Worker goroutine: blocks on Dequeue until it gets a task or error.
@@ -71,7 +72,7 @@ func (p *PostgresQueueTestSuite) TestPostgresQueue_EnqueueDequeue() {
 	time.Sleep(100 * time.Millisecond)
 
 	// Enqueue a minimal Task. We don't rely on any particular fields here.
-	enqTask := Task{}
+	enqTask := coreq.Task{}
 	err := p.queue.Enqueue(ctx, enqTask)
 	p.NoErrorf(err, "Enqueue failed: %v", "formatted")
 

@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/petrijr/fluxo/internal/testutil"
+	corep "github.com/petrijr/fluxo/internal/persistence"
+	"github.com/petrijr/fluxo/mongo/internal/testutil"
 	"github.com/stretchr/testify/suite"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -155,16 +156,16 @@ func (m *MongoDBStoreTestSuite) TestMongoInstanceStore_ListInstancesFilters() {
 		}
 	}
 
-	all, err := m.store.ListInstances(InstanceFilter{})
+	all, err := m.store.ListInstances(corep.InstanceFilter{})
 	m.NoError(err, "ListInstances (no filter) failed: %v", "formatted")
 
-	wfA, err := m.store.ListInstances(InstanceFilter{WorkflowName: "wf-A"})
+	wfA, err := m.store.ListInstances(corep.InstanceFilter{WorkflowName: "wf-A"})
 	m.NoError(err, "ListInstances (wf-A) failed: %v", "formatted")
 
-	completed, err := m.store.ListInstances(InstanceFilter{Status: api.StatusCompleted})
+	completed, err := m.store.ListInstances(corep.InstanceFilter{Status: api.StatusCompleted})
 	m.NoErrorf(err, "ListInstances (COMPLETED) failed: %v", "formatted")
 
-	completedA, err := m.store.ListInstances(InstanceFilter{
+	completedA, err := m.store.ListInstances(corep.InstanceFilter{
 		WorkflowName: "wf-A",
 		Status:       api.StatusCompleted,
 	})

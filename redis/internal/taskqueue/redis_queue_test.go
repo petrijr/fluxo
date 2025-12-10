@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/petrijr/fluxo/internal/testutil"
+	coreq "github.com/petrijr/fluxo/internal/taskqueue"
+	"github.com/petrijr/fluxo/redis/internal/testutil"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/suite"
 )
@@ -63,7 +64,7 @@ func (r *RedisQueueTestSuite) TestRedisQueue_EnqueueDequeue() {
 	defer cancel()
 
 	// Start a simple worker goroutine that pulls one task.
-	tasksCh := make(chan *Task, 1)
+	tasksCh := make(chan *coreq.Task, 1)
 	errCh := make(chan error, 1)
 
 	go func() {
@@ -79,7 +80,7 @@ func (r *RedisQueueTestSuite) TestRedisQueue_EnqueueDequeue() {
 	time.Sleep(100 * time.Millisecond)
 
 	// Enqueue a zero-valued Task (we don't depend on any fields here).
-	err := r.queue.Enqueue(ctx, Task{})
+	err := r.queue.Enqueue(ctx, coreq.Task{})
 	r.NoErrorf(err, "Enqueue failed: %v", "formatted")
 
 	select {

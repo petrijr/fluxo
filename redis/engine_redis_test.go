@@ -1,27 +1,24 @@
-package engine
+package redis
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
-	"github.com/petrijr/fluxo/internal/testutil"
 	"github.com/petrijr/fluxo/pkg/api"
+	"github.com/petrijr/fluxo/redis/internal/testutil"
+	rd "github.com/redis/go-redis/v9"
 )
 
-func TestPostgresEngine_SequentialWorkflow(t *testing.T) {
-	endpoint := testutil.GetPostgresEndpoint(t)
-	db, err := sql.Open("pgx", endpoint)
-	if err != nil {
-		t.Fatalf("sql.Open failed: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+func TestRedisEngine_SequentialWorkflow(t *testing.T) {
+	endpoint := testutil.GetRedisAddress(t)
+	client := rd.NewClient(&rd.Options{
+		Addr: endpoint,
+	})
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
 
-	eng, err := NewPostgresEngine(db)
-	if err != nil {
-		t.Fatalf("NewPostgresEngine failed: %v", err)
-	}
+	eng := NewRedisEngine(client)
 
 	wf := api.WorkflowDefinition{
 		Name: "alpha",
@@ -55,6 +52,6 @@ func TestPostgresEngine_SequentialWorkflow(t *testing.T) {
 	}
 
 	if inst2.Output != "done" {
-		t.Fatalf("unexpected output from Postgres: %v", inst2.Output)
+		t.Fatalf("unexpected output from Redis: %v", inst2.Output)
 	}
 }

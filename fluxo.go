@@ -8,8 +8,6 @@ import (
 	"github.com/petrijr/fluxo/internal/taskqueue"
 	"github.com/petrijr/fluxo/pkg/api"
 	"github.com/petrijr/fluxo/pkg/worker"
-	"github.com/redis/go-redis/v9"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // Re-export key types so users don't need to dig into pkg/api.
@@ -78,36 +76,6 @@ func NewSQLiteEngineWithObserver(db *sql.DB, obs Observer) (Engine, error) {
 	return engine.NewSQLiteEngineWithObserver(db, obs)
 }
 
-// NewPostgresEngine returns an Engine that persists instances in PostgreSQL.
-func NewPostgresEngine(db *sql.DB) (Engine, error) {
-	return engine.NewPostgresEngine(db)
-}
-
-// NewPostgresEngineWithObserver returns a Postgres-backed Engine with the given Observer.
-func NewPostgresEngineWithObserver(db *sql.DB, obs Observer) (Engine, error) {
-	return engine.NewPostgresEngineWithObserver(db, obs)
-}
-
-// NewRedisEngine returns an Engine that persists instances in Redis.
-func NewRedisEngine(client *redis.Client) Engine {
-	return engine.NewRedisEngine(client)
-}
-
-// NewRedisEngineWithObserver returns a Redis-backed Engine with the given Observer.
-func NewRedisEngineWithObserver(client *redis.Client, obs Observer) Engine {
-	return engine.NewRedisEngineWithObserver(client, obs)
-}
-
-// NewMongoEngine returns an Engine that persists instances in MongoDB.
-func NewMongoEngine(client *mongo.Client) Engine {
-	return engine.NewMongoEngine(client)
-}
-
-// NewMongoEngineWithObserver returns a Mongo-backed Engine with the given Observer.
-func NewMongoEngineWithObserver(client *mongo.Client, obs Observer) Engine {
-	return engine.NewMongoEngineWithObserver(client, obs)
-}
-
 // Convenience helpers that just forward to the underlying Engine.
 
 // Run runs a registered workflow synchronously.
@@ -150,18 +118,6 @@ func NewInMemoryQueue(size int) Queue {
 
 func NewSQLiteQueue(db *sql.DB) (Queue, error) {
 	return taskqueue.NewSQLiteQueue(db)
-}
-
-func NewPostgresQueue(db *sql.DB) (Queue, error) {
-	return taskqueue.NewPostgresQueue(db)
-}
-
-func NewRedisQueue(client *redis.Client, prefix string) Queue {
-	return taskqueue.NewRedisQueue(client, prefix)
-}
-
-func NewMongoQueue(client *mongo.Client, dbName, collName string) Queue {
-	return taskqueue.NewMongoQueue(client, dbName, collName)
 }
 
 func NewWorker(engine api.Engine, queue Queue) *Worker {

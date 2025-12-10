@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// encodeValue serializes arbitrary Go values using encoding/gob.
+// EncodeValue serializes arbitrary Go values using encoding/gob.
 // Callers must ensure that values are gob-encodable.
-func encodeValue(v any) ([]byte, error) {
+func EncodeValue(v any) ([]byte, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -26,8 +26,8 @@ func encodeValue(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decodeValue tries both interface-first (legacy) and concrete decoding.
-func decodeValue[T any](data []byte) (T, error) {
+// DecodeValue tries both interface-first (legacy) and concrete decoding.
+func DecodeValue[T any](data []byte) (T, error) {
 	var zero T
 	if len(data) == 0 {
 		return zero, nil

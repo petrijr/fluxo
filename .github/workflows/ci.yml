@@ -41,14 +41,14 @@ jobs:
           git diff --exit-code || (echo "go mod tidy produced changes; please commit them" && exit 1)
 
       - name: Go generate
-        run: go generate ./...
+        run: go generate ./... ./mongo/... ./postgres/... ./redis/...
 
       - name: Go vet
-        run: go vet ./...
+        run: go vet ./... ./mongo/... ./postgres/... ./redis/...
 
       - name: Go test with coverage
         run: |
-          go test $(go list ./... | grep -v '/examples' | grep -v 'testutil') -covermode=count -coverprofile=coverage.out
+          go test $(go list ./... ./mongo/... ./postgres/... ./redis/... | grep -v '/examples' | grep -v 'testutil') -covermode=count -coverprofile=coverage.out
           go tool cover -func=coverage.out -o=coverage.out
 
       - name: Generate coverage badge

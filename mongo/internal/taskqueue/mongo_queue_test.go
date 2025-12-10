@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/petrijr/fluxo/internal/testutil"
+	coreq "github.com/petrijr/fluxo/internal/taskqueue"
+
+	"github.com/petrijr/fluxo/mongo/internal/testutil"
 	"github.com/stretchr/testify/suite"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -60,7 +62,7 @@ func (m *MongoQueueTestSuite) TestMongoQueue_EnqueueDequeue() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tasksCh := make(chan *Task, 1)
+	tasksCh := make(chan *coreq.Task, 1)
 	errCh := make(chan error, 1)
 
 	// Worker goroutine: blocks on Dequeue until it gets a task or error.
@@ -77,7 +79,7 @@ func (m *MongoQueueTestSuite) TestMongoQueue_EnqueueDequeue() {
 	time.Sleep(100 * time.Millisecond)
 
 	// Enqueue a minimal Task; we don't rely on any specific fields here.
-	enqTask := Task{}
+	enqTask := coreq.Task{}
 	if err := m.queue.Enqueue(ctx, enqTask); err != nil {
 		m.NoErrorf(err, "Enqueue failed: %v", "formatted")
 	}

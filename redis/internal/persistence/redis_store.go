@@ -8,6 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	corep "github.com/petrijr/fluxo/internal/persistence"
 	"github.com/petrijr/fluxo/pkg/api"
 )
 
@@ -26,7 +27,7 @@ type RedisInstanceStore struct {
 	prefix string
 }
 
-var _ InstanceStore = (*RedisInstanceStore)(nil)
+var _ corep.InstanceStore = (*RedisInstanceStore)(nil)
 
 type redisInstancePayload struct {
 	ID          string
@@ -68,15 +69,15 @@ func (s *RedisInstanceStore) keyStatus(status api.Status) string {
 }
 
 func encodeRedisPayload(inst *api.WorkflowInstance) ([]byte, error) {
-	inBytes, err := encodeValue(inst.Input)
+	inBytes, err := corep.EncodeValue(inst.Input)
 	if err != nil {
 		return nil, err
 	}
-	outBytes, err := encodeValue(inst.Output)
+	outBytes, err := corep.EncodeValue(inst.Output)
 	if err != nil {
 		return nil, err
 	}
-	stepResultsBytes, err := encodeValue(inst.StepResults)
+	stepResultsBytes, err := corep.EncodeValue(inst.StepResults)
 	if err != nil {
 		return nil, err
 	}
@@ -106,22 +107,22 @@ func encodeRedisPayload(inst *api.WorkflowInstance) ([]byte, error) {
 
 func decodeRedisPayload(data []byte) (*api.WorkflowInstance, error) {
 	if len(data) == 0 {
-		return nil, ErrInstanceNotFound
+		return nil, corep.ErrInstanceNotFound
 	}
 	var payload redisInstancePayload
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&payload); err != nil {
 		return nil, err
 	}
 
-	inVal, err := decodeValue[any](payload.Input)
+	inVal, err := corep.DecodeValue[any](payload.Input)
 	if err != nil {
 		return nil, err
 	}
-	outVal, err := decodeValue[any](payload.Output)
+	outVal, err := corep.DecodeValue[any](payload.Output)
 	if err != nil {
 		return nil, err
 	}
-	stepResultsVal, err := decodeValue[map[int]any](payload.StepResults)
+	stepResultsVal, err := corep.DecodeValue[map[int]any](payload.StepResults)
 	if err != nil {
 		return nil, err
 	}
@@ -195,14 +196,14 @@ func (s *RedisInstanceStore) GetInstance(id string) (*api.WorkflowInstance, erro
 	data, err := s.client.Get(ctx, s.keyInstance(id)).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, ErrInstanceNotFound
+			return nil, corep.ErrInstanceNotFound
 		}
 		return nil, err
 	}
 	return decodeRedisPayload(data)
 }
 
-func (s *RedisInstanceStore) ListInstances(filter InstanceFilter) ([]*api.WorkflowInstance, error) {
+func (s *RedisInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.WorkflowInstance, error) {
 	ctx := context.Background()
 
 	var ids []string
