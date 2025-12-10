@@ -4,7 +4,6 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/petrijr/fluxo)](https://goreportcard.com/report/github.com/petrijr/fluxo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://github.com/petrijr/fluxo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/petrijr/fluxo/actions/workflows/tests.yml)
-![Coverage](./coverage.svg)
 
 Fluxo is a **fast, embeddable, deterministic workflow engine** written in pure Go.
 It is designed as a practical alternative to Temporal/Camunda for teams that want workflow reliability **without running
@@ -310,47 +309,6 @@ This project is still evolving and contributions are encouraged.
 ## 📄 License
 
 MIT — see `LICENSE`.
-
-# API Reference
-
-Great — here are the three additions you asked for:
-
-1. **Badges for the README**
-2. **An official API Reference section**
-3. **A full CONTRIBUTING.md suitable for a public Go project**
-
-Everything is written to be immediately usable in a GitHub repository.
-
----
-
-# ✅ **1. Badges for README**
-
-These should go at the very top of your README, immediately after the project title:
-
-```md
-[![Go Reference](https://pkg.go.dev/badge/github.com/petrijr/fluxo.svg)](https://pkg.go.dev/github.com/petrijr/fluxo)
-[![Go Report Card](https://goreportcard.com/badge/github.com/petrijr/fluxo)](https://goreportcard.com/report/github.com/petrijr/fluxo)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://github.com/petrijr/fluxo/actions/workflows/tests.yml/badge.svg)](https://github.com/petrijr/fluxo/actions/workflows/tests.yml)
-```
-
-These follow standard Go OSS style:
-
-* **pkg.go.dev** reference badge
-* **Go Report Card**
-* **License**
-* **GitHub Actions test workflow** (you can rename `tests.yml` if needed)
-
----
-
-# ✅ **2. API Reference Section for README**
-
-Below is a concise but complete “API Reference (MVP)” section that matches your current codebase accurately and
-honestly.
-
-Add this to your README after the “Control Flow” or “Persistence” section.
-
----
 
 ## 📘 API Reference (MVP)
 
