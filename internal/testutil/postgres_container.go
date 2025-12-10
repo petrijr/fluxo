@@ -13,10 +13,8 @@ import (
 )
 
 var (
-	pgOnce      sync.Once
-	pgContainer testcontainers.Container
-	pgDSN       string
-	pgErr       error
+	pgOnce sync.Once
+	pgDSN  string
 )
 
 func GetPostgresEndpoint(t *testing.T) string {
@@ -56,7 +54,6 @@ func startPostgresOnce(t *testing.T) string {
 		)
 
 		if err != nil {
-			pgErr = err
 			return
 		}
 
@@ -67,11 +64,9 @@ func startPostgresOnce(t *testing.T) string {
 		endpoint, err := postgresC.Endpoint(ctx, "")
 		if err != nil {
 			_ = postgresC.Terminate(context.Background()) // best-effort cleanup
-			pgErr = err
 			return
 		}
 
-		pgContainer = postgresC
 		pgDSN = fmt.Sprintf("postgres://fluxo:fluxo@%s/fluxo_test?sslmode=disable", endpoint)
 	})
 

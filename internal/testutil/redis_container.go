@@ -11,10 +11,8 @@ import (
 )
 
 var (
-	redisOnce      sync.Once
-	redisContainer testcontainers.Container
-	redisURI       string
-	redisErr       error
+	redisOnce sync.Once
+	redisURI  string
 )
 
 func GetRedisAddress(t *testing.T) string {
@@ -42,7 +40,6 @@ func startRedisContainer(t *testing.T) string {
 		)
 
 		if err != nil {
-			redisErr = err
 			return
 		}
 
@@ -53,7 +50,6 @@ func startRedisContainer(t *testing.T) string {
 		endpoint, err := redisC.Endpoint(ctx, "")
 		if err != nil {
 			_ = redisC.Terminate(context.Background()) // best-effort cleanup
-			redisErr = err
 			return
 		}
 

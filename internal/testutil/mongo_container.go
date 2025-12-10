@@ -12,10 +12,8 @@ import (
 )
 
 var (
-	mongoOnce      sync.Once
-	mongoContainer testcontainers.Container
-	mongoURI       string
-	mongoErr       error
+	mongoOnce sync.Once
+	mongoURI  string
 )
 
 func GetMongoURI(t *testing.T) string {
@@ -42,7 +40,6 @@ func startMongoContainerOnce(t *testing.T) string {
 		)
 
 		if err != nil {
-			mongoErr = err
 			return
 		}
 
@@ -53,7 +50,6 @@ func startMongoContainerOnce(t *testing.T) string {
 		endpoint, err := mongoC.Endpoint(ctx, "")
 		if err != nil {
 			_ = mongoC.Terminate(context.Background()) // best-effort cleanup
-			mongoErr = err
 			return
 		}
 
