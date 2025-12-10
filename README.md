@@ -3,7 +3,8 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/petrijr/fluxo.svg)](https://pkg.go.dev/github.com/petrijr/fluxo)
 [![Go Report Card](https://goreportcard.com/badge/github.com/petrijr/fluxo)](https://goreportcard.com/report/github.com/petrijr/fluxo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://github.com/petrijr/fluxo/actions/workflows/tests.yml/badge.svg)](https://github.com/petrijr/fluxo/actions/workflows/tests.yml)
+[![Tests](https://github.com/petrijr/fluxo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/petrijr/fluxo/actions/workflows/tests.yml)
+![Coverage](./coverage.svg)
 
 Fluxo is a **fast, embeddable, deterministic workflow engine** written in pure Go.
 It is designed as a practical alternative to Temporal/Camunda for teams that want workflow reliability **without running
