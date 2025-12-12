@@ -35,6 +35,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      - name: Init workspace
+        run: |
+          go work init .
+          [ -f mongo/go.mod ] && go work use ./mongo
+          [ -f postgres/go.mod ] && go work use ./postgres
+          [ -f redis/go.mod ] && go work use ./redis
+
       - name: Go tidy (check only)
         run: |
           go mod tidy

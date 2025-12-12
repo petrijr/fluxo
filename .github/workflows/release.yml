@@ -28,8 +28,15 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+      - name: Init workspace
+        run: |
+          go work init .
+          [ -f mongo/go.mod ] && go work use ./mongo
+          [ -f postgres/go.mod ] && go work use ./postgres
+          [ -f redis/go.mod ] && go work use ./redis
+
       - name: Run tests
-        run: go test ./... ./mongo/... ./postgres/... ./redis/...
+        run: go test ./...
 
   github-release:
     name: Create GitHub Release
