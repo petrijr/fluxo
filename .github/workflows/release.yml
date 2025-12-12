@@ -29,7 +29,7 @@ jobs:
           git diff --exit-code go.mod go.sum
 
       - name: Run tests
-        run: go test ./...
+        run: go test ./... ./mongo/... ./postgres/... ./redis/...
 
   github-release:
     name: Create GitHub Release
