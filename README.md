@@ -3,7 +3,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/petrijr/fluxo.svg)](https://pkg.go.dev/github.com/petrijr/fluxo)
 [![Go Report Card](https://goreportcard.com/badge/github.com/petrijr/fluxo)](https://goreportcard.com/report/github.com/petrijr/fluxo)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../Downloads/fluxo_mvp_docs_updated/fluxo%20-%20Copy/LICENSE)
 [![Tests](https://github.com/petrijr/fluxo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/petrijr/fluxo/actions/workflows/tests.yml)
 
 Fluxo is a **fast, embeddable, deterministic workflow engine** written in pure Go.
@@ -40,7 +40,7 @@ Fluxo is a *library* — not a service. You embed it directly into your applicat
 go get github.com/petrijr/fluxo
 ```
 
-Go **1.21+** is recommended.
+Go **1.25+** is recommended (Fluxo's `go.mod` targets Go 1.25).
 
 ---
 
@@ -54,23 +54,25 @@ package main
 import (
 	"context"
 	"log"
+
 	"github.com/petrijr/fluxo"
 )
 
 func createAccount(ctx context.Context, input any) (any, error) {
+	// In real life, do something deterministic (or use idempotency keys).
 	return map[string]any{"userID": "123"}, nil
 }
 
 func sendWelcomeEmail(ctx context.Context, input any) (any, error) {
 	state := input.(map[string]any)
-	log.Printf("sending welcome email to %s", state["userID"])
+	log.Printf("sending welcome email to userID=%v", state["userID"])
 	return state, nil
 }
 
 func main() {
 	ctx := context.Background()
 
-	flow := fluxo.New("OnboardUser").
+	flow := fluxo.New("onboard-user").
 		Step("createAccount", createAccount).
 		Step("sendWelcomeEmail", sendWelcomeEmail)
 
@@ -109,29 +111,61 @@ eng := fluxo.NewInMemoryEngine()
 Embedded durability; ideal default for single-node services:
 
 ```go
+import (
+	"database/sql"
+
+	_ "modernc.org/sqlite"
+)
+
 db, _ := sql.Open("sqlite", "file:fluxo.db?_journal=WAL")
 eng, _ := fluxo.NewSQLiteEngine(db)
 ```
 
 ### PostgreSQL
 
+> PostgreSQL support lives in a separate module so the core Fluxo dependency stays lightweight.
+
 ```go
+import (
+	"database/sql"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+	fluxopg "github.com/petrijr/fluxo/postgres"
+)
+
 db, _ := sql.Open("pgx", "postgres://user:pass@localhost:5432/fluxo")
-eng, _ := fluxo.NewPostgresEngine(db)
+eng, _ := fluxopg.NewPostgresEngine(db)
 ```
 
 ### Redis
 
+> Redis support lives in a separate module.
+
 ```go
-rdb := redis.NewClient(&redis.Options{ Addr: "localhost:6379" })
-eng := fluxo.NewRedisEngine(rdb)
+import (
+	fluxoredis "github.com/petrijr/fluxo/redis"
+	"github.com/redis/go-redis/v9"
+)
+
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+eng, _ := fluxoredis.NewRedisEngine(rdb)
 ```
 
 ### MongoDB
 
+> MongoDB support lives in a separate module.
+
 ```go
-client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
-eng := fluxo.NewMongoEngine(client)
+import (
+	"context"
+
+	fluxomongo "github.com/petrijr/fluxo/mongo"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+client, _ := mongo.Connect(context.Background(), options.Client().ApplyURI("mongodb://localhost:27017"))
+eng, _ := fluxomongo.NewMongoEngine(client)
 ```
 
 Backend choice does **not** change workflow code.
@@ -180,8 +214,8 @@ While-condition:
 
 ```go
 flow.While("until-ready",
-func (input any) bool { return !input.(State).Ready },
-body,
+           func (input any) bool { return !input.(State).Ready },
+           body,
 )
 ```
 
@@ -191,8 +225,8 @@ Avoid `any` by using strongly-typed steps:
 
 ```go
 flow.Step("typed", fluxo.TypedStep(func(ctx context.Context, s Counter) (Counter, error) {
-s.Value++
-return s, nil
+     s.Value++
+     return s, nil
 }))
 ```
 
@@ -200,11 +234,11 @@ Typed looping:
 
 ```go
 flow.Step("loop", fluxo.TypedWhile(
-func(s Counter) bool { return s.Value < 5 },
-func (ctx context.Context, s Counter) (Counter, error) {
-s.Value++
-return s, nil
-},
+    func(s Counter) bool { return s.Value < 5 },
+    func (ctx context.Context, s Counter) (Counter, error) {
+        s.Value++
+        return s, nil
+    },
 ))
 ```
 
@@ -212,12 +246,27 @@ return s, nil
 
 ## 🧵 Workers (Asynchronous Execution)
 
-Fluxo workers pull tasks from the task queue and execute them:
+Fluxo workers pull tasks from a task queue and execute them. The worker API is intentionally small: you call `ProcessOne`
+in a loop (it blocks inside the queue’s `Dequeue`).
 
 ```go
+queue := fluxo.NewInMemoryQueue(1000) // or fluxo.NewSQLiteQueue(db)
+
 w := fluxo.NewWorker(eng, queue)
-go w.Run(ctx)
+
+go func() {
+	for {
+		_, err := w.ProcessOne(ctx)
+		if err != nil {
+			// ctx canceled, dequeue error, or engine error
+			return
+		}
+	}
+}()
 ```
+
+Workers can be horizontally scaled by running multiple worker goroutines (or processes) against the same durable queue.
+
 
 Workers can be horizontally scaled.
 
@@ -319,7 +368,7 @@ This is the public API surface area for Fluxo’s MVP release.
 
 ```go
 func New(name string) *FlowBuilder
-func Run(ctx context.Context, eng Engine, workflow string, input any) (*Instance, error)
+func Run(ctx context.Context, eng Engine, name string, input any) (*WorkflowInstance, error)
 ```
 
 ### Engines
@@ -343,25 +392,36 @@ func NewMongoEngineWithObserver(client *mongo.Client, o Observer) Engine
 
 ### Task Queues
 
+Core module:
+
 ```go
-func NewInMemoryQueue(capacity int) TaskQueue
-func NewSQLiteQueue(db *sql.DB) (TaskQueue, error)
-func NewPostgresQueue(db *sql.DB) (TaskQueue, error)
-func NewRedisQueue(client *redis.Client) TaskQueue
-func NewMongoQueue(client *mongo.Client) TaskQueue
+func NewInMemoryQueue(capacity int) Queue
+func NewSQLiteQueue(db *sql.DB) (Queue, error)
+```
+
+Optional modules (separate `go get`):
+
+```go
+// github.com/petrijr/fluxo/postgres
+func postgres.NewPostgresQueue(db *sql.DB) (Queue, error)
+
+// github.com/petrijr/fluxo/redis
+func redis.NewRedisQueue(client *redis.Client) (Queue, error)
+
+// github.com/petrijr/fluxo/mongo
+func mongo.NewMongoQueue(client *mongo.Client) (Queue, error)
 ```
 
 ### Worker
 
 ```go
-func NewWorker(eng Engine, q TaskQueue) *Worker
-func NewWorkerWithConfig(eng Engine, q TaskQueue, cfg worker.Config) *Worker
+func NewWorker(eng Engine, q Queue) *Worker
+func NewWorkerWithConfig(eng Engine, q Queue, cfg Config) *Worker
 ```
 
-Key methods:
+Key method:
 
 ```go
-func (w *Worker) Run(ctx context.Context) error
 func (w *Worker) ProcessOne(ctx context.Context) (bool, error)
 ```
 
@@ -370,7 +430,7 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error)
 ```go
 type LocalRunner struct {
 Engine Engine
-Queue  TaskQueue
+Queue  Queue
 Worker *Worker
 }
 

@@ -44,7 +44,7 @@ system that can be embedded directly into Go services without external dependenc
 
 ### 2.1.3 Task Runtime
 
-- Steps run inside safe worker pools.
+- Steps run inside the engine (synchronous `Engine.Run`) or via external workers pulling tasks from a queue (asynchronous mode).
 - Automatic retry policies:
     - Retry count
     - Exponential backoff
@@ -58,7 +58,7 @@ system that can be embedded directly into Go services without external dependenc
 
 ### 2.1.5 Logging & Instrumentation
 
-- Built-in structured logging (zap or slog compatible).
+- Built-in structured logging via `log/slog` (customizable via the Observer interface).
 - Metrics:
     - Workflow completions, failures
     - Step duration
