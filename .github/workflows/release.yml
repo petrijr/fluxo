@@ -23,6 +23,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Tidy (and verify clean)
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
       - name: Run tests
         run: go test ./...
 
