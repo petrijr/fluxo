@@ -17,7 +17,12 @@ var (
 // WorkflowStore handles storage of workflow definitions.
 type WorkflowStore interface {
 	SaveWorkflow(def api.WorkflowDefinition) error
-	GetWorkflow(name string) (api.WorkflowDefinition, error)
+	// GetWorkflow returns the workflow definition for a name+version.
+	GetWorkflow(name string, version string) (api.WorkflowDefinition, error)
+	// GetLatestWorkflow returns the workflow if exactly one version exists.
+	// Errors if zero or multiple versions are present.
+	GetLatestWorkflow(name string) (api.WorkflowDefinition, error)
+	ListWorkflowVersions(name string) ([]string, error)
 }
 
 // InstanceFilter is used to select instances from the store.

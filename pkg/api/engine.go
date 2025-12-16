@@ -1,6 +1,11 @@
 package api
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var ErrWorkflowDefinitionMismatch = errors.New("workflow definition mismatch")
 
 // Engine is the high-level engine API (iteration 1: synchronous).
 type Engine interface {
@@ -9,6 +14,9 @@ type Engine interface {
 
 	// Run starts and runs the workflow to completion (synchronously).
 	Run(ctx context.Context, name string, input any) (*WorkflowInstance, error)
+
+	// RunVersion starts and runs a specific workflow version.
+	RunVersion(ctx context.Context, name string, version string, input any) (*WorkflowInstance, error)
 
 	// GetInstance looks up a workflow instance by ID.
 	// Returns an error if the instance is not found.

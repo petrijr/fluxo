@@ -23,7 +23,7 @@ func TestInMemoryStore_SaveAndGetWorkflow(t *testing.T) {
 		t.Fatalf("SaveWorkflow failed: %v", err)
 	}
 
-	got, err := store.GetWorkflow("test-wf")
+	got, err := store.GetLatestWorkflow("test-wf")
 	if err != nil {
 		t.Fatalf("GetWorkflow failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestInMemoryStore_SaveAndGetWorkflow(t *testing.T) {
 func TestInMemoryStore_GetWorkflowNotFound(t *testing.T) {
 	store := NewInMemoryStore()
 
-	_, err := store.GetWorkflow("does-not-exist")
+	_, err := store.GetLatestWorkflow("does-not-exist")
 	if err == nil {
 		t.Fatalf("expected error for missing workflow")
 	}

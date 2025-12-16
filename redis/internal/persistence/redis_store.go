@@ -32,6 +32,8 @@ var _ corep.InstanceStore = (*RedisInstanceStore)(nil)
 type redisInstancePayload struct {
 	ID          string
 	Workflow    string
+	Version     string
+	Fingerprint string
 	Status      string
 	CurrentStep int
 	Input       []byte
@@ -66,81 +68,6 @@ func (s *RedisInstanceStore) keyWorkflow(name string) string {
 
 func (s *RedisInstanceStore) keyStatus(status api.Status) string {
 	return s.prefix + "idx:status:" + string(status)
-}
-
-func encodeRedisPayload(inst *api.WorkflowInstance) ([]byte, error) {
-	inBytes, err := corep.EncodeValue(inst.Input)
-	if err != nil {
-		return nil, err
-	}
-	outBytes, err := corep.EncodeValue(inst.Output)
-	if err != nil {
-		return nil, err
-	}
-	stepResultsBytes, err := corep.EncodeValue(inst.StepResults)
-	if err != nil {
-		return nil, err
-	}
-
-	errStr := ""
-	if inst.Err != nil {
-		errStr = inst.Err.Error()
-	}
-
-	payload := redisInstancePayload{
-		ID:          inst.ID,
-		Workflow:    inst.Name,
-		Status:      string(inst.Status),
-		CurrentStep: inst.CurrentStep,
-		Input:       inBytes,
-		Output:      outBytes,
-		StepResults: stepResultsBytes,
-		Error:       errStr,
-	}
-
-	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(&payload); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func decodeRedisPayload(data []byte) (*api.WorkflowInstance, error) {
-	if len(data) == 0 {
-		return nil, corep.ErrInstanceNotFound
-	}
-	var payload redisInstancePayload
-	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&payload); err != nil {
-		return nil, err
-	}
-
-	inVal, err := corep.DecodeValue[any](payload.Input)
-	if err != nil {
-		return nil, err
-	}
-	outVal, err := corep.DecodeValue[any](payload.Output)
-	if err != nil {
-		return nil, err
-	}
-	stepResultsVal, err := corep.DecodeValue[map[int]any](payload.StepResults)
-	if err != nil {
-		return nil, err
-	}
-
-	inst := &api.WorkflowInstance{
-		ID:          payload.ID,
-		Name:        payload.Workflow,
-		Status:      api.Status(payload.Status),
-		CurrentStep: payload.CurrentStep,
-		Input:       inVal,
-		Output:      outVal,
-		StepResults: stepResultsVal,
-	}
-	if payload.Error != "" {
-		inst.Err = errors.New(payload.Error)
-	}
-
-	return inst, nil
 }
 
 func (s *RedisInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
@@ -259,4 +186,83 @@ func (s *RedisInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.
 	}
 
 	return instances, nil
+}
+
+func decodeRedisPayload(data []byte) (*api.WorkflowInstance, error) {
+	if len(data) == 0 {
+		return nil, corep.ErrInstanceNotFound
+	}
+	var payload redisInstancePayload
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	inVal, err := corep.DecodeValue[any](payload.Input)
+	if err != nil {
+		return nil, err
+	}
+	outVal, err := corep.DecodeValue[any](payload.Output)
+	if err != nil {
+		return nil, err
+	}
+	stepResultsVal, err := corep.DecodeValue[map[int]any](payload.StepResults)
+	if err != nil {
+		return nil, err
+	}
+
+	inst := &api.WorkflowInstance{
+		ID:          payload.ID,
+		Name:        payload.Workflow,
+		Version:     payload.Version,
+		Fingerprint: payload.Fingerprint,
+		Status:      api.Status(payload.Status),
+		CurrentStep: payload.CurrentStep,
+		Input:       inVal,
+		Output:      outVal,
+		StepResults: stepResultsVal,
+	}
+	if payload.Error != "" {
+		inst.Err = errors.New(payload.Error)
+	}
+
+	return inst, nil
+}
+
+func encodeRedisPayload(inst *api.WorkflowInstance) ([]byte, error) {
+	inBytes, err := corep.EncodeValue(inst.Input)
+	if err != nil {
+		return nil, err
+	}
+	outBytes, err := corep.EncodeValue(inst.Output)
+	if err != nil {
+		return nil, err
+	}
+	stepResultsBytes, err := corep.EncodeValue(inst.StepResults)
+	if err != nil {
+		return nil, err
+	}
+
+	errStr := ""
+	if inst.Err != nil {
+		errStr = inst.Err.Error()
+	}
+
+	payload := redisInstancePayload{
+		ID:          inst.ID,
+		Workflow:    inst.Name,
+		Version:     inst.Version,
+		Fingerprint: inst.Fingerprint,
+		Status:      string(inst.Status),
+		CurrentStep: inst.CurrentStep,
+		Input:       inBytes,
+		Output:      outBytes,
+		StepResults: stepResultsBytes,
+		Error:       errStr,
+	}
+
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(&payload); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

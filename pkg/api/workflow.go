@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -710,17 +712,21 @@ type StepDefinition struct {
 
 // WorkflowDefinition describes a workflow as a sequence of steps.
 type WorkflowDefinition struct {
-	Name  string
-	Steps []StepDefinition
+	Name        string
+	Version     string // default: "v1"
+	Fingerprint string // optional: if empty, Fluxo computes from deterministic metadata
+	Steps       []StepDefinition
 }
 
 // WorkflowInstance holds the ParallelResult of a run.
 type WorkflowInstance struct {
-	ID     string
-	Name   string
-	Status Status
-	Output any
-	Err    error
+	ID          string
+	Name        string
+	Version     string
+	Fingerprint string
+	Status      Status
+	Output      any
+	Err         error
 
 	// Input is the original input provided to Run when this instance
 	// was first started. It is used for deterministic replay on resume.
@@ -802,6 +808,41 @@ type TimeoutPayload struct {
 // until an external signal with the given name arrives.
 type waitForSignalError struct {
 	Name string
+}
+
+// ComputeWorkflowFingerprint returns a stable fingerprint for the workflow definition
+// based on deterministic metadata only (no function pointers).
+//
+// NOTE: This is a stub in the "tests-first" phase; implementation follows.
+func ComputeWorkflowFingerprint(def WorkflowDefinition) string {
+	type stepFingerprint struct {
+		Name  string
+		Retry *RetryPolicy
+	}
+
+	payload := struct {
+		Name    string
+		Version string
+		Steps   []stepFingerprint
+	}{
+		Name:    def.Name,
+		Version: def.Version,
+	}
+
+	for _, s := range def.Steps {
+		payload.Steps = append(payload.Steps, stepFingerprint{
+			Name:  s.Name,
+			Retry: s.Retry,
+		})
+	}
+
+	b, err := json.Marshal(payload)
+	if err != nil {
+		panic("workflow fingerprint marshal failed: " + err.Error())
+	}
+
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func (e *waitForSignalError) Error() string {

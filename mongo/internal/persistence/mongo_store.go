@@ -37,6 +37,8 @@ func NewMongoInstanceStore(client *mongo.Client, dbName, collName string) *Mongo
 type mongoInstanceDoc struct {
 	ID          string `bson:"_id"`
 	Workflow    string `bson:"workflow_name"`
+	Version     string `bson:"version"`
+	Fingerprint string `bson:"fingerprint"`
 	Status      string `bson:"status"`
 	CurrentStep int    `bson:"current_step"`
 	Input       []byte `bson:"input,omitempty"`
@@ -70,6 +72,8 @@ func (s *MongoInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 	doc := mongoInstanceDoc{
 		ID:          inst.ID,
 		Workflow:    inst.Name,
+		Version:     inst.Version,
+		Fingerprint: inst.Fingerprint,
 		Status:      string(inst.Status),
 		CurrentStep: inst.CurrentStep,
 		Input:       inBytes,
@@ -107,13 +111,15 @@ func (s *MongoInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 
 	update := bson.M{
 		"$set": bson.M{
-			"workflow_name": inst.Name,
-			"status":        string(inst.Status),
-			"current_step":  inst.CurrentStep,
-			"input":         inBytes,
-			"output":        outBytes,
-			"step_results":  stepResultsBytes,
-			"error":         errStr,
+			"workflow_name":        inst.Name,
+			"workflow_version":     inst.Version,
+			"workflow_fingerprint": inst.Fingerprint,
+			"status":               string(inst.Status),
+			"current_step":         inst.CurrentStep,
+			"input":                inBytes,
+			"output":               outBytes,
+			"step_results":         stepResultsBytes,
+			"error":                errStr,
 		},
 	}
 
@@ -156,6 +162,8 @@ func (s *MongoInstanceStore) GetInstance(id string) (*api.WorkflowInstance, erro
 	inst := &api.WorkflowInstance{
 		ID:          doc.ID,
 		Name:        doc.Workflow,
+		Version:     doc.Version,
+		Fingerprint: doc.Fingerprint,
 		Status:      api.Status(doc.Status),
 		CurrentStep: doc.CurrentStep,
 		Input:       inVal,
@@ -210,6 +218,8 @@ func (s *MongoInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.
 		inst := &api.WorkflowInstance{
 			ID:          doc.ID,
 			Name:        doc.Workflow,
+			Version:     doc.Version,
+			Fingerprint: doc.Fingerprint,
 			Status:      api.Status(doc.Status),
 			CurrentStep: doc.CurrentStep,
 			Input:       inVal,

@@ -26,6 +26,10 @@ func (f *fakeEngine) Run(ctx context.Context, name string, input any) (*Workflow
 	panic("Run should not be called in fakeEngine")
 }
 
+func (f *fakeEngine) RunVersion(ctx context.Context, name string, version string, input any) (*WorkflowInstance, error) {
+	panic("RunVersion should not be called in fakeEngine")
+}
+
 func (f *fakeEngine) GetInstance(ctx context.Context, id string) (*WorkflowInstance, error) {
 	inst, ok := f.instances[id]
 	if !ok {

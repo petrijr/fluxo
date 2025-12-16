@@ -41,6 +41,8 @@ func (s *PostgresInstanceStore) initSchema() error {
 		CREATE TABLE IF NOT EXISTS instances (
 			id TEXT PRIMARY KEY,
 			workflow_name TEXT NOT NULL,
+			workflow_version TEXT NOT NULL DEFAULT 'v1',
+			workflow_fingerprint TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
 			current_step INTEGER NOT NULL,
 			input BYTEA,
@@ -74,11 +76,13 @@ func (s *PostgresInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO instances (id, workflow_name, status, current_step, input, output, step_results, error)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO instances (id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`,
 		inst.ID,
 		inst.Name,
+		inst.Version,
+		inst.Fingerprint,
 		string(inst.Status),
 		inst.CurrentStep,
 		input,
@@ -112,16 +116,20 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 
 	res, err := s.db.Exec(`
 		UPDATE instances
-		SET workflow_name = $1,
-		    status        = $2,
-		    current_step  = $3,
-		    input         = $4,
-		    output        = $5,
-		    step_results  = $6,
-		    error         = $7
-		WHERE id = $8
+		SET workflow_name        = $1,
+		    workflow_version     = $2,
+		    workflow_fingerprint = $3,
+		    status               = $4,
+		    current_step         = $5,
+		    input                = $6,
+		    output               = $7,
+		    step_results         = $8,
+		    error                = $9
+		WHERE id = $10
 	`,
 		inst.Name,
+		inst.Version,
+		inst.Fingerprint,
 		string(inst.Status),
 		inst.CurrentStep,
 		input,
@@ -147,7 +155,7 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 
 func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
 	row := s.db.QueryRow(`
-		SELECT id, workflow_name, status, current_step, input, output, step_results, error
+		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error
 		FROM instances
 		WHERE id = $1
 	`,
@@ -160,7 +168,7 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 	var errStr sql.NullString
 	var currentStep int
 
-	if err := row.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
+	if err := row.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, corep.ErrInstanceNotFound
 		}
@@ -197,7 +205,7 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 
 func (s *PostgresInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.WorkflowInstance, error) {
 	query := `
-		SELECT id, workflow_name, status, current_step, input, output, step_results, error
+		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error
 		FROM instances`
 	var args []any
 	var clauses []string
@@ -230,7 +238,7 @@ func (s *PostgresInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*a
 		var errStr sql.NullString
 		var currentStep int
 
-		if err := rows.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
+		if err := rows.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
 			return nil, err
 		}
 

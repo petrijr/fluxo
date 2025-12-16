@@ -21,6 +21,11 @@ type startChildrenEngine struct {
 	runErr error
 }
 
+func (e *startChildrenEngine) RunVersion(ctx context.Context, name string, version string, input any) (*WorkflowInstance, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
 func (e *startChildrenEngine) RegisterWorkflow(def WorkflowDefinition) error {
 	panic("RegisterWorkflow should not be called in startChildrenEngine")
 }

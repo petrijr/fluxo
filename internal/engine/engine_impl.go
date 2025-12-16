@@ -94,19 +94,29 @@ func (e *engineImpl) RegisterWorkflow(def api.WorkflowDefinition) error {
 		return errors.New("workflow must have at least one step")
 	}
 
+	// Default version for legacy callers/tests that omit it.
+	if def.Version == "" {
+		def.Version = "v1"
+	}
+
 	// Check for duplicates via the store.
-	if existing, err := e.workflows.GetWorkflow(def.Name); err == nil && existing.Name != "" {
+	if existing, err := e.workflows.GetWorkflow(def.Name, def.Version); err == nil && existing.Name != "" {
 		return fmt.Errorf("workflow already registered: %s", def.Name)
 	} else if err != nil && !errors.Is(err, persistence.ErrWorkflowNotFound) {
 		// Unexpected store error.
 		return err
 	}
 
+	// Set fingerprint if not yet set
+	if def.Fingerprint == "" {
+		def.Fingerprint = api.ComputeWorkflowFingerprint(def)
+	}
+
 	return e.workflows.SaveWorkflow(def)
 }
 
 func (e *engineImpl) Run(ctx context.Context, name string, input any) (*api.WorkflowInstance, error) {
-	def, err := e.workflows.GetWorkflow(name)
+	def, err := e.workflows.GetLatestWorkflow(name)
 	if err != nil {
 		if errors.Is(err, persistence.ErrWorkflowNotFound) {
 			return nil, fmt.Errorf("unknown workflow: %s", name)
@@ -117,6 +127,8 @@ func (e *engineImpl) Run(ctx context.Context, name string, input any) (*api.Work
 	inst := &api.WorkflowInstance{
 		ID:          e.nextInstanceID(),
 		Name:        def.Name,
+		Version:     def.Version,
+		Fingerprint: def.Fingerprint,
 		Status:      api.StatusRunning,
 		Input:       input,
 		CurrentStep: 0,
@@ -138,6 +150,41 @@ func (e *engineImpl) Run(ctx context.Context, name string, input any) (*api.Work
 	return e.executeSteps(ctx, def, inst, 0, input)
 }
 
+func (e *engineImpl) RunVersion(
+	ctx context.Context,
+	name string,
+	version string,
+	input any,
+) (*api.WorkflowInstance, error) {
+
+	def, err := e.workflows.GetWorkflow(name, version)
+	if err != nil {
+		return nil, err
+	}
+
+	inst := &api.WorkflowInstance{
+		ID:          e.nextInstanceID(),
+		Name:        def.Name,
+		Version:     def.Version,
+		Fingerprint: def.Fingerprint,
+		Status:      api.StatusRunning,
+		Input:       input,
+		CurrentStep: 0,
+		StepResults: make(map[int]any),
+	}
+
+	e.observer.OnWorkflowStart(ctx, inst)
+
+	if err := e.instances.SaveInstance(inst); err != nil {
+		inst.Status = api.StatusFailed
+		inst.Err = err
+		e.observer.OnWorkflowFailed(ctx, inst, err)
+		return inst, err
+	}
+
+	return e.executeSteps(ctx, def, inst, 0, inst.Input)
+}
+
 func (e *engineImpl) GetInstance(ctx context.Context, id string) (*api.WorkflowInstance, error) {
 	inst, err := e.instances.GetInstance(id)
 	if err != nil {
@@ -146,6 +193,28 @@ func (e *engineImpl) GetInstance(ctx context.Context, id string) (*api.WorkflowI
 		}
 		return nil, err
 	}
+
+	// Backward compatibility: instances created before versioning may have empty Version.
+	version := inst.Version
+	if version == "" {
+		version = "v1"
+	}
+
+	def, err := e.workflows.GetWorkflow(inst.Name, version)
+	if err != nil {
+		// GetInstance is an inspection API: allow reading instances even if the
+		// workflow definition is not registered/available (e.g. tests that seed
+		// instances directly, or older persisted instances).
+		if errors.Is(err, persistence.ErrWorkflowNotFound) {
+			return inst, nil
+		}
+		return nil, err
+	}
+
+	if inst.Fingerprint != "" && inst.Fingerprint != def.Fingerprint {
+		return nil, api.ErrWorkflowDefinitionMismatch
+	}
+
 	return inst, nil
 }
 
@@ -170,12 +239,18 @@ func (e *engineImpl) Resume(ctx context.Context, id string) (*api.WorkflowInstan
 		return nil, fmt.Errorf("cannot resume instance %s in status %s", id, inst.Status)
 	}
 
-	def, err := e.workflows.GetWorkflow(inst.Name)
+	version := inst.Version
+	if version == "" {
+		version = "v1"
+	}
+
+	def, err := e.workflows.GetWorkflow(inst.Name, version)
 	if err != nil {
-		if errors.Is(err, persistence.ErrWorkflowNotFound) {
-			return nil, fmt.Errorf("workflow definition not found for instance %s (name=%s)", id, inst.Name)
-		}
 		return nil, err
+	}
+
+	if inst.Fingerprint != "" && inst.Fingerprint != def.Fingerprint {
+		return nil, api.ErrWorkflowDefinitionMismatch
 	}
 
 	// Reset runtime fields and replay from the beginning.
@@ -204,12 +279,18 @@ func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload
 		return nil, fmt.Errorf("cannot signal instance %s in status %s", id, inst.Status)
 	}
 
-	def, err := e.workflows.GetWorkflow(inst.Name)
+	version := inst.Version
+	if version == "" {
+		version = "v1"
+	}
+
+	def, err := e.workflows.GetWorkflow(inst.Name, version)
 	if err != nil {
-		if errors.Is(err, persistence.ErrWorkflowNotFound) {
-			return nil, fmt.Errorf("workflow definition not found for instance %s (name=%s)", id, inst.Name)
-		}
 		return nil, err
+	}
+
+	if inst.Fingerprint != "" && inst.Fingerprint != def.Fingerprint {
+		return nil, api.ErrWorkflowDefinitionMismatch
 	}
 
 	// Prepare signal payload as the new input to the waiting step.

@@ -260,6 +260,9 @@ func (s *stubEngine) RegisterWorkflow(def WorkflowDefinition) error { return nil
 func (s *stubEngine) Run(ctx context.Context, name string, input any) (*WorkflowInstance, error) {
 	return nil, nil
 }
+func (s *stubEngine) RunVersion(ctx context.Context, name string, version string, input any) (*WorkflowInstance, error) {
+	return nil, nil
+}
 func (s *stubEngine) GetInstance(ctx context.Context, id string) (*WorkflowInstance, error) {
 	return nil, nil
 }

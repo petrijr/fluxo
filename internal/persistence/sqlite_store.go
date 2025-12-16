@@ -37,6 +37,8 @@ func (s *SQLiteInstanceStore) initSchema() error {
 		CREATE TABLE IF NOT EXISTS instances (
 			id TEXT PRIMARY KEY,
 			workflow_name TEXT NOT NULL,
+			workflow_version TEXT NOT NULL DEFAULT 'v1',
+			workflow_fingerprint TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
 			current_step INTEGER NOT NULL,
 			input BLOB,
@@ -70,10 +72,12 @@ func (s *SQLiteInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO instances (id, workflow_name, status, current_step, input, output, step_results, error)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO instances (id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		inst.ID,
 		inst.Name,
+		inst.Version,
+		inst.Fingerprint,
 		string(inst.Status),
 		inst.CurrentStep,
 		input,
@@ -107,9 +111,11 @@ func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 
 	res, err := s.db.Exec(`
 		UPDATE instances
-		SET workflow_name = ?, status = ?, current_step = ?, input = ?, output = ?, step_results = ?, error = ?
+		SET workflow_name = ?, workflow_version = ?, workflow_fingerprint = ?, status = ?, current_step = ?, input = ?, output = ?, step_results = ?, error = ?
 		WHERE id = ?`,
 		inst.Name,
+		inst.Version,
+		inst.Fingerprint,
 		string(inst.Status),
 		inst.CurrentStep,
 		input,
@@ -135,7 +141,7 @@ func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 
 func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
 	row := s.db.QueryRow(`
-		SELECT id, workflow_name, status, current_step, input, output, step_results, error
+		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error
 		FROM instances
 		WHERE id = ?`,
 		id,
@@ -147,7 +153,7 @@ func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, err
 	var errStr sql.NullString
 	var currentStep int
 
-	if err := row.Scan(&inst.ID, &inst.Name, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
+	if err := row.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrInstanceNotFound
 		}
@@ -184,7 +190,7 @@ func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, err
 
 func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.WorkflowInstance, error) {
 	query := `
-		SELECT id, workflow_name, status, input, output, step_results, error
+		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, input, output, step_results, error
 		FROM instances`
 	var args []any
 	var clauses []string
@@ -216,7 +222,7 @@ func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Workf
 		var input, output, stepResults []byte
 		var errStr sql.NullString
 
-		if err := rows.Scan(&inst.ID, &inst.Name, &statusStr, &input, &output, &stepResults, &errStr); err != nil {
+		if err := rows.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &input, &output, &stepResults, &errStr); err != nil {
 			return nil, err
 		}
 
