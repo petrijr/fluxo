@@ -152,9 +152,9 @@ flow.Step("a", stepA).Step("b", stepB)
 
 ```go
 flow.If("check-limit",
-func (input any) bool { return input.(int) < 100 },
-fluxo.StepFunc(func (ctx context.Context, in any) (any, error) { return "ok", nil }),
-fluxo.StepFunc(func (ctx context.Context, in any) (any, error) { return "too large", nil }),
+    func (input any) bool { return input.(int) < 100 },
+    fluxo.StepFunc(func (ctx context.Context, in any) (any, error) { return "ok", nil }),
+    fluxo.StepFunc(func (ctx context.Context, in any) (any, error) { return "too large", nil }),
 )
 ```
 
@@ -162,9 +162,9 @@ fluxo.StepFunc(func (ctx context.Context, in any) (any, error) { return "too lar
 
 ```go
 flow.Parallel("prepare",
-stepFetchUser,
-stepFetchSettings,
-stepWarmCache,
+  stepFetchUser,
+  stepFetchSettings,
+  stepWarmCache,
 )
 ```
 
@@ -180,8 +180,8 @@ While-condition:
 
 ```go
 flow.While("until-ready",
-func (input any) bool { return !input.(State).Ready },
-body,
+    func (input any) bool { return !input.(State).Ready },
+    body,
 )
 ```
 
@@ -191,8 +191,8 @@ Avoid `any` by using strongly-typed steps:
 
 ```go
 flow.Step("typed", fluxo.TypedStep(func(ctx context.Context, s Counter) (Counter, error) {
-s.Value++
-return s, nil
+    s.Value++
+    return s, nil
 }))
 ```
 
@@ -200,11 +200,11 @@ Typed looping:
 
 ```go
 flow.Step("loop", fluxo.TypedWhile(
-func(s Counter) bool { return s.Value < 5 },
-func (ctx context.Context, s Counter) (Counter, error) {
-s.Value++
-return s, nil
-},
+  func(s Counter) bool { return s.Value < 5 },
+  func (ctx context.Context, s Counter) (Counter, error) {
+    s.Value++
+    return s, nil
+  },
 ))
 ```
 
