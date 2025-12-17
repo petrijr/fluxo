@@ -49,17 +49,3 @@ func TestFlowBuilder_BuildAndRegister(t *testing.T) {
 		t.Fatalf("unexpected empty definition")
 	}
 }
-
-func TestFlowBuilder_MustRegister_PanicOnDuplicate(t *testing.T) {
-	eng := NewInMemoryEngine()
-	flow := New("dup-flow").Step("s", addConst(1))
-	flow.MustRegister(eng)
-
-	// Second registration of the same name should cause panic in MustRegister.
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatalf("expected panic on duplicate registration")
-		}
-	}()
-	flow.MustRegister(eng)
-}

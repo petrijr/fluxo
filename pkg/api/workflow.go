@@ -812,8 +812,6 @@ type waitForSignalError struct {
 
 // ComputeWorkflowFingerprint returns a stable fingerprint for the workflow definition
 // based on deterministic metadata only (no function pointers).
-//
-// NOTE: This is a stub in the "tests-first" phase; implementation follows.
 func ComputeWorkflowFingerprint(def WorkflowDefinition) string {
 	type stepFingerprint struct {
 		Name  string

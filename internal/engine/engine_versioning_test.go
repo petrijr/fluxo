@@ -116,3 +116,22 @@ func TestVersioning_ResumeFailsOnDefinitionMismatch(t *testing.T) {
 		t.Fatalf("expected ErrWorkflowDefinitionMismatch, got: %v", err)
 	}
 }
+
+func TestVersioning_RegisterSameVersionTwice_Idempotent(t *testing.T) {
+	e := NewInMemoryEngine()
+
+	wf := api.WorkflowDefinition{
+		Name:    "order",
+		Version: "v1",
+		Steps: []api.StepDefinition{
+			{Name: "s1", Fn: func(ctx context.Context, input any) (any, error) { return "ok", nil }},
+		},
+	}
+
+	if err := e.RegisterWorkflow(wf); err != nil {
+		t.Fatalf("first register failed: %v", err)
+	}
+	if err := e.RegisterWorkflow(wf); err != nil {
+		t.Fatalf("second register should be idempotent, got: %v", err)
+	}
+}

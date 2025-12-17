@@ -52,11 +52,12 @@ func TestRegisterWorkflowRequiresAtLeastOneStep(t *testing.T) {
 	}
 }
 
-func TestRegisterWorkflowDuplicateNameFails(t *testing.T) {
+func TestRegisterWorkflowDuplicateNameVersionIsIdempotent(t *testing.T) {
 	engine := NewInMemoryEngine()
 
 	wf := api.WorkflowDefinition{
-		Name: "duplicate",
+		Name:    "idempotent",
+		Version: "v1",
 		Steps: []api.StepDefinition{
 			{Name: "step", Fn: dummyStep()},
 		},
@@ -65,13 +66,7 @@ func TestRegisterWorkflowDuplicateNameFails(t *testing.T) {
 	if err := engine.RegisterWorkflow(wf); err != nil {
 		t.Fatalf("first RegisterWorkflow failed: %v", err)
 	}
-
-	err := engine.RegisterWorkflow(wf)
-	if err == nil {
-		t.Fatalf("expected error for duplicate workflow registration, got nil")
-	}
-
-	if !strings.Contains(err.Error(), "already registered") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := engine.RegisterWorkflow(wf); err != nil {
+		t.Fatalf("second RegisterWorkflow failed: %v", err)
 	}
 }

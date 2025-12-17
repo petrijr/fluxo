@@ -69,6 +69,15 @@ When resuming (e.g., `GetInstance`, `Signal`, worker resume, crash recovery):
 - Compatibility layers or step-by-step schema migration DSL
 - Distributed workflow execution
 
+## Registration Rules
+
+- Workflow identity is `(name, version)`.
+- `RegisterWorkflow` is **idempotent** for an identical `(name, version, fingerprint)`:
+    - Re-registering the same version with the same fingerprint must succeed (common in process restarts).
+- Re-registering the same `(name, version)` with a **different** fingerprint must fail with
+  `ErrWorkflowDefinitionMismatch`.
+- Multiple versions for the same name (e.g. `order@v1`, `order@v2`) may coexist.
+
 ## Testing Strategy
 
 Must cover:

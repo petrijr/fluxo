@@ -99,17 +99,22 @@ func (e *engineImpl) RegisterWorkflow(def api.WorkflowDefinition) error {
 		def.Version = "v1"
 	}
 
-	// Check for duplicates via the store.
-	if existing, err := e.workflows.GetWorkflow(def.Name, def.Version); err == nil && existing.Name != "" {
-		return fmt.Errorf("workflow already registered: %s", def.Name)
-	} else if err != nil && !errors.Is(err, persistence.ErrWorkflowNotFound) {
-		// Unexpected store error.
-		return err
-	}
-
 	// Set fingerprint if not yet set
 	if def.Fingerprint == "" {
 		def.Fingerprint = api.ComputeWorkflowFingerprint(def)
+	}
+
+	// Registration is idempotent per (name, version) as long as the fingerprint matches.
+	existing, err := e.workflows.GetWorkflow(def.Name, def.Version)
+	if err == nil && existing.Name != "" {
+		if existing.Fingerprint == def.Fingerprint {
+			return nil
+		}
+		return fmt.Errorf("%w: workflow %s@%s fingerprint differs (existing=%s new=%s)",
+			api.ErrWorkflowDefinitionMismatch, def.Name, def.Version, existing.Fingerprint, def.Fingerprint)
+	}
+	if err != nil && !errors.Is(err, persistence.ErrWorkflowNotFound) {
+		return err
 	}
 
 	return e.workflows.SaveWorkflow(def)
@@ -119,6 +124,10 @@ func (e *engineImpl) Run(ctx context.Context, name string, input any) (*api.Work
 	def, err := e.workflows.GetLatestWorkflow(name)
 	if err != nil {
 		if errors.Is(err, persistence.ErrWorkflowNotFound) {
+			// Distinguish "unknown workflow" from "ambiguous workflow (multiple versions)".
+			if versions, verr := e.workflows.ListWorkflowVersions(name); verr == nil && len(versions) > 1 {
+				return nil, fmt.Errorf("workflow %s has multiple registered versions %v; use RunVersion", name, versions)
+			}
 			return nil, fmt.Errorf("unknown workflow: %s", name)
 		}
 		return nil, err
