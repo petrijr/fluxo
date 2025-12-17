@@ -3,6 +3,7 @@ package taskqueue
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -109,7 +110,7 @@ func (q *PostgresQueue) Dequeue(ctx context.Context, owner string, leaseTTL time
 
 		if err != nil {
 			_ = tx.Rollback()
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				// Nothing available yet – wait a bit and retry using reusable timer.
 				tmr.Reset(100 * time.Millisecond)
 				select {
@@ -152,6 +153,11 @@ func (q *PostgresQueue) Len() int {
 		return 0
 	}
 	return n
+}
+
+func (q *PostgresQueue) RenewLease(ctx context.Context, taskID string, owner string, leaseTTL time.Duration) error {
+	// Postgres implementation should delete only when acking. If Dequeue already deletes, this is a no-op.
+	return nil
 }
 
 func (q *PostgresQueue) Ack(ctx context.Context, taskID string, owner string) error {

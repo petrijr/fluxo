@@ -235,6 +235,38 @@ redis.call('HSET', notBeforeH, id, nb)
 redis.call('ZADD', readyZ, nb, id)
 return 1
 `
+var redisRenewLua = `
+-- KEYS: inflightZ, ownerH
+-- ARGV: id, owner, newExpiryNanos
+local inflightZ = KEYS[1]
+local ownerH = KEYS[2]
+
+local id = ARGV[1]
+local owner = ARGV[2]
+local expiry = tonumber(ARGV[3])
+
+local cur = redis.call('HGET', ownerH, id)
+if not cur then return 0 end
+if cur ~= owner then return 0 end
+
+redis.call('ZADD', inflightZ, expiry, id)
+return 1
+`
+
+func (q *RedisQueue) RenewLease(ctx context.Context, taskID, owner string, leaseTTL time.Duration) error {
+	expiry := time.Now().Add(leaseTTL).UnixNano()
+	res, err := q.client.Eval(ctx, redisRenewLua,
+		[]string{q.inflightKey, q.ownerKey},
+		taskID, owner, expiry,
+	).Result()
+	if err != nil {
+		return err
+	}
+	if n, ok := res.(int64); ok && n == 1 {
+		return nil
+	}
+	return errors.New("task leased by another owner")
+}
 
 func (q *RedisQueue) Ack(ctx context.Context, taskID string, owner string) error {
 	res, err := q.client.Eval(ctx, redisAckLua, []string{q.inflightKey, q.payloadKey, q.notBeforeKey, q.ownerKey}, taskID, owner).Result()

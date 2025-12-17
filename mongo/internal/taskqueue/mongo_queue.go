@@ -194,6 +194,22 @@ func (q *MongoQueue) Len() int {
 	return int(n)
 }
 
+func (q *MongoQueue) RenewLease(ctx context.Context, taskID, owner string, leaseTTL time.Duration) error {
+	expiry := time.Now().Add(leaseTTL).UnixNano()
+	res, err := q.coll.UpdateOne(
+		ctx,
+		bson.M{"_id": taskID, "leased_by": owner},
+		bson.M{"$set": bson.M{"lease_expires_at": expiry}},
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return errors.New("task leased by another owner")
+	}
+	return nil
+}
+
 func (q *MongoQueue) Ack(ctx context.Context, taskID string, owner string) error {
 	_, err := q.coll.DeleteOne(ctx, bson.M{"_id": taskID, "leased_by": owner})
 	return err

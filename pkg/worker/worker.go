@@ -51,6 +51,11 @@ type Config struct {
 	// LeaseTTL is the visibility timeout for dequeued tasks.
 	// If zero, a sensible default is used.
 	LeaseTTL time.Duration
+
+	// HeartbeatInterval controls how often the worker renews task leases
+	// while a task handler is running. If zero, defaults to LeaseTTL / 3
+	// with a minimum clamp applied.
+	HeartbeatInterval time.Duration
 }
 
 // Worker pulls tasks from a Queue and executes them using an Engine.
@@ -77,6 +82,11 @@ func NewWithConfig(engine api.Engine, queue taskqueue.Queue, cfg Config) *Worker
 	}
 	if cfg.LeaseTTL <= 0 {
 		cfg.LeaseTTL = 30 * time.Second
+	}
+	// HeartbeatInterval default: derived from LeaseTTL.
+	// We clamp later in ProcessOne to avoid very small intervals.
+	if cfg.HeartbeatInterval < 0 {
+		cfg.HeartbeatInterval = 0
 	}
 	return &Worker{
 		engine: engine,
@@ -201,6 +211,43 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 		return err
 	}
 
+	// Heartbeat runs ONLY while the engine call is in-flight (Run/Signal).
+	// It renews the task lease to prevent re-delivery for long-running handlers.
+	startHeartbeat := func() (stop func()) {
+		// Determine heartbeat interval.
+		interval := w.cfg.HeartbeatInterval
+		if interval <= 0 {
+			interval = w.cfg.LeaseTTL / 3
+		}
+		// Clamp to a sane minimum to avoid tight loops.
+		const minHeartbeat = 10 * time.Millisecond
+		if interval < minHeartbeat {
+			interval = minHeartbeat
+		}
+		maxHeartbeat := w.cfg.LeaseTTL / 2
+		if maxHeartbeat > 0 && interval > maxHeartbeat {
+			interval = maxHeartbeat
+		}
+
+		hbCtx, cancel := context.WithCancel(context.Background())
+		t := time.NewTicker(interval)
+		go func(taskID string) {
+			defer t.Stop()
+			for {
+				select {
+				case <-hbCtx.Done():
+					return
+				case <-t.C:
+					// Best-effort renewal. If it fails (e.g. ownership lost), the handler
+					// still continues, but the task may become visible again.
+					_ = w.queue.RenewLease(context.Background(), taskID, w.cfg.WorkerID, w.cfg.LeaseTTL)
+				}
+			}
+		}(task.ID)
+
+		return func() { cancel() }
+	}
+
 	switch task.Type {
 	case taskqueue.TaskTypeStartWorkflow:
 		payload, ok := task.Payload.(StartWorkflowPayload)
@@ -208,7 +255,9 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 			return true, errors.New("invalid payload type for start-workflow task")
 		}
 
+		stopHB := startHeartbeat()
 		inst, runErr := w.engine.Run(ctx, task.WorkflowName, payload.Input)
+		stopHB()
 		if runErr != nil {
 			// Special case: workflow is now WAITING for a signal.
 			if sigName, ok := api.IsWaitForSignalError(runErr); ok && inst != nil {
@@ -240,7 +289,9 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 
 	case taskqueue.TaskTypeSignal:
 		// Deliver the signal.
+		stopHB := startHeartbeat()
 		_, sigErr := w.engine.Signal(ctx, task.InstanceID, task.SignalName, task.Payload)
+		stopHB()
 
 		// If this is an auto-timeout signal, we consider it best effort:
 		// - If the instance is no longer waiting (e.g., approved early),

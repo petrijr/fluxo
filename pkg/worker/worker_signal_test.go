@@ -29,6 +29,10 @@ func (f *fakeQueue) Dequeue(ctx context.Context, owner string, leaseTTL time.Dur
 	return f.dequeueResult, f.dequeueErr
 }
 
+func (f *fakeQueue) RenewLease(ctx context.Context, taskID string, owner string, leaseTTL time.Duration) error {
+	return nil
+}
+
 // Ack acknowledges successful processing of a leased task and removes it from the queue.
 func (f *fakeQueue) Ack(ctx context.Context, taskID string, owner string) error {
 	return nil

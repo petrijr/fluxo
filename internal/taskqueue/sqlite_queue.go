@@ -178,6 +178,26 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context, owner string, leaseTTL time.D
 	}
 }
 
+func (q *SQLiteQueue) RenewLease(ctx context.Context, taskID, owner string, leaseTTL time.Duration) error {
+	id, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil {
+		return err
+	}
+	expires := time.Now().Add(leaseTTL).UnixNano()
+	res, err := q.db.ExecContext(ctx,
+		`UPDATE tasks SET lease_expires_at = ? WHERE id = ? AND leased_by = ?`,
+		expires, id, owner,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("task leased by another owner")
+	}
+	return nil
+}
+
 func (q *SQLiteQueue) Ack(ctx context.Context, taskID string, owner string) error {
 	id, err := strconv.ParseInt(taskID, 10, 64)
 	if err != nil {

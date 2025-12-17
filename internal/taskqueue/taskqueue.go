@@ -52,6 +52,10 @@ type Queue interface {
 	// or the context is cancelled.
 	Dequeue(ctx context.Context, owner string, leaseTTL time.Duration) (*Task, error)
 
+	// RenewLease extends the lease for a task currently leased by `owner`.
+	// If the task is not leased by `owner`, it should return an error.
+	RenewLease(ctx context.Context, taskID string, owner string, leaseTTL time.Duration) error
+
 	// Ack acknowledges successful processing of a leased task and removes it from the queue.
 	Ack(ctx context.Context, taskID string, owner string) error
 

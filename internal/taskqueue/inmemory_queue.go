@@ -25,6 +25,9 @@ type InMemoryQueue struct {
 	inflight map[string]leasedTask
 }
 
+// Ensure InMemoryQueue implements Queue.
+var _ Queue = (*InMemoryQueue)(nil)
+
 type leasedTask struct {
 	task   Task
 	owner  string
@@ -114,6 +117,27 @@ func (q *InMemoryQueue) Dequeue(ctx context.Context, owner string, leaseTTL time
 		q.mu.Unlock()
 		return &t, nil
 	}
+}
+
+func (q *InMemoryQueue) RenewLease(ctx context.Context, taskID, owner string, leaseTTL time.Duration) error {
+	_ = ctx
+	if leaseTTL <= 0 {
+		return errors.New("leaseTTL must be > 0")
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	lt, ok := q.inflight[taskID]
+	if !ok {
+		return errors.New("task not inflight")
+	}
+	if lt.owner != owner {
+		return errors.New("task leased by another owner")
+	}
+	lt.expiry = time.Now().Add(leaseTTL)
+	q.inflight[taskID] = lt
+	return nil
 }
 
 func (q *InMemoryQueue) Ack(ctx context.Context, taskID string, owner string) error {
