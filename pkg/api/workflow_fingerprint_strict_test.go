@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestComputeWorkflowFingerprint_DifferentStepFunctionContent(t *testing.T) {
+func TestComputeWorkflowFingerprintStrict_DifferentStepFunctionIdentity(t *testing.T) {
 	wf1 := WorkflowDefinition{
 		Name:    "order",
 		Version: "v1",
@@ -21,11 +21,10 @@ func TestComputeWorkflowFingerprint_DifferentStepFunctionContent(t *testing.T) {
 		},
 	}
 
-	fp1 := ComputeWorkflowFingerprint(wf1)
-	fp2 := ComputeWorkflowFingerprint(wf2)
+	fp1 := ComputeWorkflowFingerprintStrict(wf1)
+	fp2 := ComputeWorkflowFingerprintStrict(wf2)
 
-	if fp1 != fp2 {
-		t.Fatalf("fingerprints do not match")
+	if fp1 == fp2 {
+		t.Fatalf("expected strict fingerprints to differ")
 	}
-
 }

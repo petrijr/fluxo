@@ -16,7 +16,9 @@
 - **Workflow Version**: Opaque string, e.g. `v1`, `2025-12-16`, `1.0.3`.
 - **Fingerprint (Definition Hash)**: A stable hash derived from the workflow definition’s deterministic metadata.
     - Includes: workflow name, version, step names, retry policy configuration, and other deterministic config fields.
-    - Excludes: function pointers / closures (non-serializable, non-hashable).
+- Excludes (legacy fingerprint helper): function pointers / closures (non-serializable, non-hashable).
+- Default behavior: Fluxo computes a **strict fingerprint** that also includes best-effort step function identity
+  (via `runtime.FuncForPC`) and best-effort build identity (via `debug.ReadBuildInfo`).
 
 ## API Expectations
 

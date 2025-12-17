@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -810,27 +812,64 @@ type waitForSignalError struct {
 	Name string
 }
 
-// ComputeWorkflowFingerprint returns a stable fingerprint for the workflow definition
-// based on deterministic metadata only (no function pointers).
-func ComputeWorkflowFingerprint(def WorkflowDefinition) string {
+// ComputeWorkflowFingerprintStrict computes a fingerprint intended for safe deploys.
+//
+// Compared to ComputeWorkflowFingerprint, this additionally incorporates:
+//   - step function identity (best-effort via runtime.FuncForPC)
+//   - build identity (best-effort via debug.ReadBuildInfo)
+//
+// The goal is to make it very unlikely that code changes can be re-registered
+// as the "same" workflow definition, which could otherwise violate deterministic replay.
+func ComputeWorkflowFingerprintStrict(def WorkflowDefinition) string {
 	type stepFingerprint struct {
-		Name  string
-		Retry *RetryPolicy
+		Name     string
+		Retry    *RetryPolicy
+		FuncName string
+	}
+
+	type buildInfo struct {
+		Revision string
+		Modified bool
+		Module   string
+		Version  string
 	}
 
 	payload := struct {
 		Name    string
 		Version string
+		Build   buildInfo
 		Steps   []stepFingerprint
 	}{
 		Name:    def.Name,
 		Version: def.Version,
 	}
 
+	if bi, ok := debug.ReadBuildInfo(); ok && bi != nil {
+		payload.Build.Module = bi.Main.Path
+		payload.Build.Version = bi.Main.Version
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				payload.Build.Revision = s.Value
+			case "vcs.modified":
+				payload.Build.Modified = s.Value == "true"
+			}
+		}
+	}
+
 	for _, s := range def.Steps {
+		funcName := ""
+		if s.Fn != nil {
+			pc := reflect.ValueOf(s.Fn).Pointer()
+			if f := runtime.FuncForPC(pc); f != nil {
+				funcName = f.Name()
+			}
+		}
+
 		payload.Steps = append(payload.Steps, stepFingerprint{
-			Name:  s.Name,
-			Retry: s.Retry,
+			Name:     s.Name,
+			Retry:    s.Retry,
+			FuncName: funcName,
 		})
 	}
 

@@ -135,3 +135,33 @@ func TestVersioning_RegisterSameVersionTwice_Idempotent(t *testing.T) {
 		t.Fatalf("second register should be idempotent, got: %v", err)
 	}
 }
+
+func TestVersioning_RegisterSameVersionDifferentStepFunction_FailsByDefault(t *testing.T) {
+	e := NewInMemoryEngine()
+
+	wf1 := api.WorkflowDefinition{
+		Name:    "order",
+		Version: "v1",
+		Steps: []api.StepDefinition{
+			{Name: "s1", Fn: func(ctx context.Context, input any) (any, error) { return "v1", nil }},
+		},
+	}
+	if err := e.RegisterWorkflow(wf1); err != nil {
+		t.Fatalf("RegisterWorkflow(wf1) failed: %v", err)
+	}
+
+	wf2 := api.WorkflowDefinition{
+		Name:    "order",
+		Version: "v1",
+		Steps: []api.StepDefinition{
+			{Name: "s1", Fn: func(ctx context.Context, input any) (any, error) { return "v1-changed", nil }},
+		},
+	}
+	err := e.RegisterWorkflow(wf2)
+	if err == nil {
+		t.Fatalf("expected RegisterWorkflow(wf2) to fail due to fingerprint mismatch")
+	}
+	if !errors.Is(err, api.ErrWorkflowDefinitionMismatch) {
+		t.Fatalf("expected ErrWorkflowDefinitionMismatch, got: %v", err)
+	}
+}

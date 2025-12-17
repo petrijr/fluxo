@@ -101,7 +101,7 @@ func (e *engineImpl) RegisterWorkflow(def api.WorkflowDefinition) error {
 
 	// Set fingerprint if not yet set
 	if def.Fingerprint == "" {
-		def.Fingerprint = api.ComputeWorkflowFingerprint(def)
+		def.Fingerprint = api.ComputeWorkflowFingerprintStrict(def)
 	}
 
 	// Registration is idempotent per (name, version) as long as the fingerprint matches.
