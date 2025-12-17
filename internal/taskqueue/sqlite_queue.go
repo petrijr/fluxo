@@ -194,7 +194,7 @@ func encodePayload(v any) ([]byte, error) {
 	}
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
-	var iv any = v
+	var iv = v
 	if err := enc.Encode(&iv); err != nil {
 		return nil, err
 	}

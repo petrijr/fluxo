@@ -1,4 +1,3 @@
-// local_runner.go
 package fluxo
 
 import (

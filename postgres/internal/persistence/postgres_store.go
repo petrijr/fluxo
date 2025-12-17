@@ -1,10 +1,12 @@
 package persistence
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	corep "github.com/petrijr/fluxo/internal/persistence"
 	"github.com/petrijr/fluxo/pkg/api"
@@ -36,8 +38,8 @@ func NewPostgresInstanceStore(db *sql.DB) (*PostgresInstanceStore, error) {
 	return s, nil
 }
 
-func (s *PostgresInstanceStore) initSchema() error {
-	_, err := s.db.Exec(`
+func (p *PostgresInstanceStore) initSchema() error {
+	_, err := p.db.Exec(`
 		CREATE TABLE IF NOT EXISTS instances (
 			id TEXT PRIMARY KEY,
 			workflow_name TEXT NOT NULL,
@@ -48,13 +50,15 @@ func (s *PostgresInstanceStore) initSchema() error {
 			input BYTEA,
 			output BYTEA,
 			step_results BYTEA,
-			error TEXT
+			error TEXT,
+			lease_owner TEXT NOT NULL DEFAULT '',
+			lease_expires_at BIGINT NOT NULL DEFAULT 0
 		);
 	`)
 	return err
 }
 
-func (s *PostgresInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
+func (p *PostgresInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 	input, err := corep.EncodeValue(inst.Input)
 	if err != nil {
 		return err
@@ -75,9 +79,9 @@ func (s *PostgresInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 		errStr = inst.Err.Error()
 	}
 
-	_, err = s.db.Exec(`
-		INSERT INTO instances (id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	_, err = p.db.Exec(`
+		INSERT INTO instances (id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error, lease_owner, lease_expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`,
 		inst.ID,
 		inst.Name,
@@ -89,11 +93,13 @@ func (s *PostgresInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 		output,
 		stepResults,
 		errStr,
+		inst.LeaseOwner,
+		inst.LeaseExpiresAt.UnixNano(),
 	)
 	return err
 }
 
-func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
+func (p *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 	input, err := corep.EncodeValue(inst.Input)
 	if err != nil {
 		return err
@@ -114,7 +120,7 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 		errStr = inst.Err.Error()
 	}
 
-	res, err := s.db.Exec(`
+	res, err := p.db.Exec(`
 		UPDATE instances
 		SET workflow_name        = $1,
 		    workflow_version     = $2,
@@ -124,8 +130,10 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 		    input                = $6,
 		    output               = $7,
 		    step_results         = $8,
-		    error                = $9
-		WHERE id = $10
+		    error                = $9,
+		    lease_owner          = $10, 
+		    lease_expires_at     = $11
+		WHERE id = $12
 	`,
 		inst.Name,
 		inst.Version,
@@ -136,6 +144,8 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 		output,
 		stepResults,
 		errStr,
+		inst.LeaseOwner,
+		inst.LeaseExpiresAt.UnixNano(),
 		inst.ID,
 	)
 	if err != nil {
@@ -153,9 +163,9 @@ func (s *PostgresInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error
 	return nil
 }
 
-func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
-	row := s.db.QueryRow(`
-		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error
+func (p *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
+	row := p.db.QueryRow(`
+		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error, lease_owner, lease_expires_at
 		FROM instances
 		WHERE id = $1
 	`,
@@ -166,9 +176,11 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 	var statusStr string
 	var input, output, stepResults []byte
 	var errStr sql.NullString
+	var leaseOwner sql.NullString
+	var leaseExpiresAtInt sql.NullInt64
 	var currentStep int
 
-	if err := row.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
+	if err := row.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr, &leaseOwner, &leaseExpiresAtInt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, corep.ErrInstanceNotFound
 		}
@@ -177,6 +189,12 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 
 	inst.Status = api.Status(statusStr)
 	inst.CurrentStep = currentStep
+	if leaseOwner.Valid {
+		inst.LeaseOwner = leaseOwner.String
+	}
+	if leaseExpiresAtInt.Valid && leaseExpiresAtInt.Int64 > 0 {
+		inst.LeaseExpiresAt = time.Unix(0, leaseExpiresAtInt.Int64)
+	}
 
 	inVal, err := corep.DecodeValue[any](input)
 	if err != nil {
@@ -203,9 +221,9 @@ func (s *PostgresInstanceStore) GetInstance(id string) (*api.WorkflowInstance, e
 	return &inst, nil
 }
 
-func (s *PostgresInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.WorkflowInstance, error) {
+func (p *PostgresInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.WorkflowInstance, error) {
 	query := `
-		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error
+		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error, lease_owner, lease_expires_at
 		FROM instances`
 	var args []any
 	var clauses []string
@@ -223,7 +241,7 @@ func (s *PostgresInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*a
 		query = query + " WHERE " + strings.Join(clauses, " AND ")
 	}
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := p.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -236,14 +254,22 @@ func (s *PostgresInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*a
 		var statusStr string
 		var input, output, stepResults []byte
 		var errStr sql.NullString
+		var leaseOwner sql.NullString
+		var leaseExpiresAtInt sql.NullInt64
 		var currentStep int
 
-		if err := rows.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
+		if err := rows.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr, &leaseOwner, &leaseExpiresAtInt); err != nil {
 			return nil, err
 		}
 
 		inst.Status = api.Status(statusStr)
 		inst.CurrentStep = currentStep
+		if leaseOwner.Valid {
+			inst.LeaseOwner = leaseOwner.String
+		}
+		if leaseExpiresAtInt.Valid && leaseExpiresAtInt.Int64 > 0 {
+			inst.LeaseExpiresAt = time.Unix(0, leaseExpiresAtInt.Int64)
+		}
 
 		inVal, err := corep.DecodeValue[any](input)
 		if err != nil {
@@ -277,4 +303,68 @@ func (s *PostgresInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*a
 	}
 
 	return instances, nil
+}
+
+func (p *PostgresInstanceStore) TryAcquireLease(ctx context.Context, instanceID, owner string, ttl time.Duration) (bool, error) {
+	now := time.Now()
+	expires := now.Add(ttl).UnixNano()
+	nowInt := now.UnixNano()
+
+	res, err := p.db.ExecContext(ctx, `
+		UPDATE instances
+		SET lease_owner = $1, lease_expires_at = $2
+		WHERE id = $3
+		AND (
+			lease_owner = ''
+			OR lease_expires_at <= $4
+			OR lease_owner = $5
+		)`,
+		owner, expires, instanceID, nowInt, owner,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (p *PostgresInstanceStore) RenewLease(ctx context.Context, instanceID, owner string, ttl time.Duration) error {
+	expires := time.Now().Add(ttl).UnixNano()
+	res, err := p.db.ExecContext(ctx, `
+		UPDATE instances
+		SET lease_expires_at = $1
+		WHERE id = $2 AND lease_owner = $3`,
+		expires, instanceID, owner,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return api.ErrWorkflowInstanceLocked
+	}
+	return nil
+}
+
+func (p *PostgresInstanceStore) ReleaseLease(ctx context.Context, instanceID, owner string) error {
+	res, err := p.db.ExecContext(ctx, `
+		UPDATE instances
+		SET lease_owner = '', lease_expires_at = 0
+		WHERE id = $1 AND (lease_owner = '' OR lease_owner = $2)`,
+		instanceID, owner,
+	)
+	if err != nil {
+		return err
+	}
+	_, _ = res.RowsAffected()
+	return nil
 }

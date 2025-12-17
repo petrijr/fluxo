@@ -1,8 +1,10 @@
 package persistence
 
 import (
+	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/petrijr/fluxo/pkg/api"
 )
@@ -146,4 +148,63 @@ func (s *InMemoryStore) ListInstances(filter InstanceFilter) ([]*api.WorkflowIns
 	}
 
 	return result, nil
+}
+
+// TryAcquireLease implements a simple in-memory lease using timestamps.
+func (s *InMemoryStore) TryAcquireLease(ctx context.Context, instanceID, owner string, ttl time.Duration) (bool, error) {
+	_ = ctx
+	now := time.Now()
+	expires := now.Add(ttl)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	inst, ok := s.instances[instanceID]
+	if !ok {
+		return false, ErrInstanceNotFound
+	}
+
+	if inst.LeaseOwner == "" || inst.LeaseExpiresAt.IsZero() || !inst.LeaseExpiresAt.After(now) || inst.LeaseOwner == owner {
+		inst.LeaseOwner = owner
+		inst.LeaseExpiresAt = expires
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (s *InMemoryStore) RenewLease(ctx context.Context, instanceID, owner string, ttl time.Duration) error {
+	_ = ctx
+	now := time.Now()
+	expires := now.Add(ttl)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	inst, ok := s.instances[instanceID]
+	if !ok {
+		return ErrInstanceNotFound
+	}
+	if inst.LeaseOwner != owner {
+		return api.ErrWorkflowInstanceLocked
+	}
+	inst.LeaseExpiresAt = expires
+	return nil
+}
+
+func (s *InMemoryStore) ReleaseLease(ctx context.Context, instanceID, owner string) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	inst, ok := s.instances[instanceID]
+	if !ok {
+		return ErrInstanceNotFound
+	}
+	if inst.LeaseOwner != "" && inst.LeaseOwner != owner {
+		return api.ErrWorkflowInstanceLocked
+	}
+	inst.LeaseOwner = ""
+	inst.LeaseExpiresAt = time.Time{}
+	return nil
 }

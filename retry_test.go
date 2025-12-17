@@ -21,11 +21,11 @@ func TestRetry_NonPositiveMaxAttemptsDefaultsToOne(t *testing.T) {
 // Ensure WithExponentialBackoff wires fields correctly and default multiplier is applied.
 func TestRetry_WithExponentialBackoff_UsesDefaults(t *testing.T) {
 	initial := 100 * time.Millisecond
-	max := 2 * time.Second
+	maxtime := 2 * time.Second
 
 	// multiplier <= 0 should default to 2.0
 	p := Retry(3).
-		WithExponentialBackoff(initial, 0, max).
+		WithExponentialBackoff(initial, 0, maxtime).
 		Policy()
 
 	if p.MaxAttempts != 3 {
@@ -34,8 +34,8 @@ func TestRetry_WithExponentialBackoff_UsesDefaults(t *testing.T) {
 	if p.InitialBackoff != initial {
 		t.Fatalf("expected InitialBackoff=%v, got %v", initial, p.InitialBackoff)
 	}
-	if p.MaxBackoff != max {
-		t.Fatalf("expected MaxBackoff=%v, got %v", max, p.MaxBackoff)
+	if p.MaxBackoff != maxtime {
+		t.Fatalf("expected MaxBackoff=%v, got %v", maxtime, p.MaxBackoff)
 	}
 	if p.BackoffMultiplier != 2.0 {
 		t.Fatalf("expected BackoffMultiplier=2.0 (default), got %v", p.BackoffMultiplier)
@@ -48,18 +48,18 @@ func TestRetry_WithExponentialBackoff_UsesDefaults(t *testing.T) {
 // Ensure WithExponentialBackoff respects an explicit multiplier.
 func TestRetry_WithExponentialBackoff_ExplicitMultiplier(t *testing.T) {
 	initial := 50 * time.Millisecond
-	max := 500 * time.Millisecond
+	maxtime := 500 * time.Millisecond
 	mult := 3.0
 
 	p := Retry(4).
-		WithExponentialBackoff(initial, mult, max).
+		WithExponentialBackoff(initial, mult, maxtime).
 		Policy()
 
 	if p.InitialBackoff != initial {
 		t.Fatalf("expected InitialBackoff=%v, got %v", initial, p.InitialBackoff)
 	}
-	if p.MaxBackoff != max {
-		t.Fatalf("expected MaxBackoff=%v, got %v", max, p.MaxBackoff)
+	if p.MaxBackoff != maxtime {
+		t.Fatalf("expected MaxBackoff=%v, got %v", maxtime, p.MaxBackoff)
 	}
 	if p.BackoffMultiplier != mult {
 		t.Fatalf("expected BackoffMultiplier=%v, got %v", mult, p.BackoffMultiplier)

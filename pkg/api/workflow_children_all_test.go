@@ -228,7 +228,8 @@ func TestWaitForChildrenStep_SomePendingReturnsWaitError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected WaitForChildrenError, got nil (out=%v)", out)
 	}
-	waitErr, ok := err.(*WaitForChildrenError)
+	var waitErr *WaitForChildrenError
+	ok := errors.As(err, &waitErr)
 	if !ok {
 		t.Fatalf("expected WaitForChildrenError, got %T (%v)", err, err)
 	}

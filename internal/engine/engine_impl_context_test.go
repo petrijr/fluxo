@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,7 +98,7 @@ func TestRunCancelsLongRunningStepViaContext(t *testing.T) {
 	if inst.Err == nil {
 		t.Fatalf("expected instance error to be set")
 	}
-	if inst.Err != context.Canceled {
+	if !errors.Is(inst.Err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", inst.Err)
 	}
 }

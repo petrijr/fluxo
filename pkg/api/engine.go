@@ -5,7 +5,11 @@ import (
 	"errors"
 )
 
-var ErrWorkflowDefinitionMismatch = errors.New("workflow definition mismatch")
+var (
+	ErrWorkflowDefinitionMismatch = errors.New("workflow definition mismatch")
+	// ErrWorkflowInstanceLocked indicates an instance is currently leased by another worker/engine.
+	ErrWorkflowInstanceLocked = errors.New("workflow instance locked")
+)
 
 // Engine is the high-level engine API (iteration 1: synchronous).
 type Engine interface {

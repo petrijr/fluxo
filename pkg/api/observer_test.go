@@ -215,14 +215,14 @@ func TestCompositeObserver_ForwardsAllEvents(t *testing.T) {
 		if o.lastWorkflowStart != inst || o.lastWorkflowComplete != inst || o.lastWorkflowFail.Inst != inst {
 			t.Fatalf("observer %d instance mismatch", i+1)
 		}
-		if o.lastWorkflowFail.Err != err {
+		if !errors.Is(err, o.lastWorkflowFail.Err) {
 			t.Fatalf("observer %d fail error mismatch", i+1)
 		}
 		if o.lastStepStart.StepName != "step-1" || o.lastStepStart.StepIndex != 1 {
 			t.Fatalf("observer %d stepStart mismatch: %+v", i+1, o.lastStepStart)
 		}
 		if o.lastStepComplete.StepName != "step-1" || o.lastStepComplete.StepIndex != 1 ||
-			o.lastStepComplete.Err != err || o.lastStepComplete.Duration != 2*time.Second {
+			!errors.Is(err, o.lastStepComplete.Err) || o.lastStepComplete.Duration != 2*time.Second {
 			t.Fatalf("observer %d stepComplete mismatch: %+v", i+1, o.lastStepComplete)
 		}
 	}

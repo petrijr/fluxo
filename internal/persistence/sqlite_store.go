@@ -1,9 +1,11 @@
 package persistence
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/petrijr/fluxo/pkg/api"
 )
@@ -44,7 +46,9 @@ func (s *SQLiteInstanceStore) initSchema() error {
 			input BLOB,
 			output BLOB,
 			step_results BLOB,
-			error TEXT
+			error TEXT,
+			lease_owner TEXT NOT NULL DEFAULT '',
+			lease_expires_at INTEGER NOT NULL DEFAULT 0
 		);`,
 	)
 	return err
@@ -72,8 +76,8 @@ func (s *SQLiteInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO instances (id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO instances (id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error, lease_owner, lease_expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		inst.ID,
 		inst.Name,
 		inst.Version,
@@ -84,6 +88,8 @@ func (s *SQLiteInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 		output,
 		stepResults,
 		errStr,
+		inst.LeaseOwner,
+		inst.LeaseExpiresAt.UnixNano(),
 	)
 	return err
 }
@@ -111,7 +117,7 @@ func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 
 	res, err := s.db.Exec(`
 		UPDATE instances
-		SET workflow_name = ?, workflow_version = ?, workflow_fingerprint = ?, status = ?, current_step = ?, input = ?, output = ?, step_results = ?, error = ?
+		SET workflow_name = ?, workflow_version = ?, workflow_fingerprint = ?, status = ?, current_step = ?, input = ?, output = ?, step_results = ?, error = ?, lease_owner = ?, lease_expires_at = ?
 		WHERE id = ?`,
 		inst.Name,
 		inst.Version,
@@ -122,6 +128,8 @@ func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 		output,
 		stepResults,
 		errStr,
+		inst.LeaseOwner,
+		inst.LeaseExpiresAt.UnixNano(),
 		inst.ID,
 	)
 	if err != nil {
@@ -141,7 +149,7 @@ func (s *SQLiteInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 
 func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
 	row := s.db.QueryRow(`
-		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error
+		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error, lease_owner, lease_expires_at
 		FROM instances
 		WHERE id = ?`,
 		id,
@@ -151,9 +159,11 @@ func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, err
 	var statusStr string
 	var input, output, stepResults []byte
 	var errStr sql.NullString
+	var leaseOwner sql.NullString
+	var leaseExpiresAtInt sql.NullInt64
 	var currentStep int
 
-	if err := row.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr); err != nil {
+	if err := row.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr, &leaseOwner, &leaseExpiresAtInt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrInstanceNotFound
 		}
@@ -162,6 +172,12 @@ func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, err
 
 	inst.Status = api.Status(statusStr)
 	inst.CurrentStep = currentStep
+	if leaseOwner.Valid {
+		inst.LeaseOwner = leaseOwner.String
+	}
+	if leaseExpiresAtInt.Valid && leaseExpiresAtInt.Int64 > 0 {
+		inst.LeaseExpiresAt = time.Unix(0, leaseExpiresAtInt.Int64)
+	}
 
 	inVal, err := DecodeValue[any](input)
 	if err != nil {
@@ -190,7 +206,7 @@ func (s *SQLiteInstanceStore) GetInstance(id string) (*api.WorkflowInstance, err
 
 func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.WorkflowInstance, error) {
 	query := `
-		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, input, output, step_results, error
+		SELECT id, workflow_name, workflow_version, workflow_fingerprint, status, current_step, input, output, step_results, error, lease_owner, lease_expires_at
 		FROM instances`
 	var args []any
 	var clauses []string
@@ -220,13 +236,23 @@ func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Workf
 		var inst api.WorkflowInstance
 		var statusStr string
 		var input, output, stepResults []byte
+		var leaseOwner sql.NullString
+		var leaseExpiresAtInt sql.NullInt64
 		var errStr sql.NullString
+		var currentStep int
 
-		if err := rows.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &input, &output, &stepResults, &errStr); err != nil {
+		if err := rows.Scan(&inst.ID, &inst.Name, &inst.Version, &inst.Fingerprint, &statusStr, &currentStep, &input, &output, &stepResults, &errStr, &leaseOwner, &leaseExpiresAtInt); err != nil {
 			return nil, err
 		}
 
 		inst.Status = api.Status(statusStr)
+		inst.CurrentStep = currentStep
+		if leaseOwner.Valid {
+			inst.LeaseOwner = leaseOwner.String
+		}
+		if leaseExpiresAtInt.Valid && leaseExpiresAtInt.Int64 > 0 {
+			inst.LeaseExpiresAt = time.Unix(0, leaseExpiresAtInt.Int64)
+		}
 
 		inVal, err := DecodeValue[any](input)
 		if err != nil {
@@ -260,4 +286,68 @@ func (s *SQLiteInstanceStore) ListInstances(filter InstanceFilter) ([]*api.Workf
 	}
 
 	return instances, nil
+}
+
+func (s *SQLiteInstanceStore) TryAcquireLease(ctx context.Context, instanceID, owner string, ttl time.Duration) (bool, error) {
+	now := time.Now()
+	expires := now.Add(ttl).UnixNano()
+	nowInt := now.UnixNano()
+
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE instances
+		SET lease_owner = ?, lease_expires_at = ?
+		WHERE id = ?
+		AND (
+			lease_owner = ''
+			OR lease_expires_at <= ?
+			OR lease_owner = ?
+		)`,
+		owner, expires, instanceID, nowInt, owner,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (s *SQLiteInstanceStore) RenewLease(ctx context.Context, instanceID, owner string, ttl time.Duration) error {
+	expires := time.Now().Add(ttl).UnixNano()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE instances
+		SET lease_expires_at = ?
+		WHERE id = ? AND lease_owner = ?`,
+		expires, instanceID, owner,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return api.ErrWorkflowInstanceLocked
+	}
+	return nil
+}
+
+func (s *SQLiteInstanceStore) ReleaseLease(ctx context.Context, instanceID, owner string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE instances
+		SET lease_owner = '', lease_expires_at = 0
+		WHERE id = ? AND (lease_owner = '' OR lease_owner = ?)`,
+		instanceID, owner,
+	)
+	if err != nil {
+		return err
+	}
+	_, _ = res.RowsAffected()
+	return nil
 }

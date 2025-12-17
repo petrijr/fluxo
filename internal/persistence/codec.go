@@ -74,7 +74,7 @@ func tryDecodeAsAny[T any](data []byte) (T, bool, error) {
 	// Special case: allow returning interface payload for T=any via reflection
 	var _ T
 	if isInterfaceType[T]() {
-		return any(iv).(T), true, nil
+		return iv.(T), true, nil
 	}
 	return zero, false, fmt.Errorf("gob: decoded interface payload of type %T not assignable to target", iv)
 }
@@ -110,7 +110,7 @@ func tryDecodeCommonConcreteAsAny[T any](data []byte) (T, bool, error) {
 		if val, ok, _ := try(c); ok {
 			// If T is any, we can safely box it
 			if isInterfaceType[T]() {
-				return any(val).(T), true, nil
+				return val.(T), true, nil
 			}
 			if v, ok := val.(T); ok {
 				return v, true, nil

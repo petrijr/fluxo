@@ -237,3 +237,68 @@ func (s *MongoInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.
 	}
 	return results, nil
 }
+
+func (s *MongoInstanceStore) TryAcquireLease(ctx context.Context, instanceID, owner string, ttl time.Duration) (bool, error) {
+	now := time.Now()
+	expires := now.Add(ttl).UnixNano()
+
+	filter := bson.M{
+		"_id": instanceID,
+		"$or": []bson.M{
+			{"lease_owner": bson.M{"$exists": false}},
+			{"lease_owner": ""},
+			{"lease_expires_at": bson.M{"$lte": now.UnixNano()}},
+			{"lease_owner": owner},
+		},
+	}
+	update := bson.M{"$set": bson.M{"lease_owner": owner, "lease_expires_at": expires}}
+
+	res := s.coll.FindOneAndUpdate(ctx, filter, update)
+	if res.Err() != nil {
+		if errors.Is(res.Err(), mongo.ErrNoDocuments) {
+			return false, nil
+		}
+		return false, res.Err()
+	}
+	return true, nil
+}
+
+func (s *MongoInstanceStore) RenewLease(ctx context.Context, instanceID, owner string, ttl time.Duration) error {
+	expires := time.Now().Add(ttl).UnixNano()
+	filter := bson.M{"_id": instanceID, "lease_owner": owner}
+	update := bson.M{"$set": bson.M{"lease_expires_at": expires}}
+	res, err := s.coll.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return api.ErrWorkflowInstanceLocked
+	}
+	return nil
+}
+
+func (s *MongoInstanceStore) ReleaseLease(ctx context.Context, instanceID, owner string) error {
+	// Idempotent: if the lease is missing, succeed. If owned by someone else, fail.
+	filter := bson.M{"_id": instanceID, "lease_owner": owner}
+	update := bson.M{"$set": bson.M{"lease_owner": "", "lease_expires_at": int64(0)}}
+	res, err := s.coll.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		// Determine if missing vs other owner.
+		var doc bson.M
+		err := s.coll.FindOne(ctx, bson.M{"_id": instanceID}).Decode(&doc)
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				return corep.ErrInstanceNotFound
+			}
+			return err
+		}
+		if lo, ok := doc["lease_owner"].(string); ok && lo != "" && lo != owner {
+			return api.ErrWorkflowInstanceLocked
+		}
+		return nil
+	}
+	return nil
+}

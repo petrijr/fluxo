@@ -1,7 +1,9 @@
 package persistence
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"github.com/petrijr/fluxo/pkg/api"
 )
@@ -37,7 +39,15 @@ type InstanceStore interface {
 	SaveInstance(inst *api.WorkflowInstance) error
 	UpdateInstance(inst *api.WorkflowInstance) error
 	GetInstance(id string) (*api.WorkflowInstance, error)
-	// ListInstances returns instances matching the given filter.
-	// If filter fields are zero-valued, all instances are returned.
 	ListInstances(filter InstanceFilter) ([]*api.WorkflowInstance, error)
+	// TryAcquireLease attempts to acquire (or re-acquire) a lease on an instance.
+	// If the instance is currently leased by another owner and the lease has not expired,
+	// it returns acquired=false, err=nil.
+	//
+	// Implementations should treat a lease owned by the same owner as re-entrant.
+	TryAcquireLease(ctx context.Context, instanceID, owner string, ttl time.Duration) (acquired bool, err error)
+	// RenewLease extends an existing lease owned by 'owner' for the given ttl.
+	RenewLease(ctx context.Context, instanceID, owner string, ttl time.Duration) error
+	// ReleaseLease releases a lease if it is owned by 'owner'. It is idempotent.
+	ReleaseLease(ctx context.Context, instanceID, owner string) error
 }

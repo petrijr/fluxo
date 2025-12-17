@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/gob"
 	"errors"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -54,23 +55,27 @@ func NewRedisInstanceStore(client *redis.Client, prefix string) *RedisInstanceSt
 	}
 }
 
-func (s *RedisInstanceStore) keyInstance(id string) string {
-	return s.prefix + "inst:" + id
+func (r *RedisInstanceStore) keyLease(id string) string {
+	return r.prefix + "lease:" + id
 }
 
-func (s *RedisInstanceStore) keyAll() string {
-	return s.prefix + "idx:all"
+func (r *RedisInstanceStore) keyInstance(id string) string {
+	return r.prefix + "inst:" + id
 }
 
-func (s *RedisInstanceStore) keyWorkflow(name string) string {
-	return s.prefix + "idx:wf:" + name
+func (r *RedisInstanceStore) keyAll() string {
+	return r.prefix + "idx:all"
 }
 
-func (s *RedisInstanceStore) keyStatus(status api.Status) string {
-	return s.prefix + "idx:status:" + string(status)
+func (r *RedisInstanceStore) keyWorkflow(name string) string {
+	return r.prefix + "idx:wf:" + name
 }
 
-func (s *RedisInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
+func (r *RedisInstanceStore) keyStatus(status api.Status) string {
+	return r.prefix + "idx:status:" + string(status)
+}
+
+func (r *RedisInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 	ctx := context.Background()
 
 	data, err := encodeRedisPayload(inst)
@@ -79,21 +84,21 @@ func (s *RedisInstanceStore) SaveInstance(inst *api.WorkflowInstance) error {
 	}
 
 	// Set payload
-	if err := s.client.Set(ctx, s.keyInstance(inst.ID), data, 0).Err(); err != nil {
+	if err := r.client.Set(ctx, r.keyInstance(inst.ID), data, 0).Err(); err != nil {
 		return err
 	}
 
 	// Update indexes (best-effort; we don't treat index failures as fatal)
-	pipe := s.client.TxPipeline()
-	pipe.SAdd(ctx, s.keyAll(), inst.ID)
-	pipe.SAdd(ctx, s.keyWorkflow(inst.Name), inst.ID)
-	pipe.SAdd(ctx, s.keyStatus(inst.Status), inst.ID)
+	pipe := r.client.TxPipeline()
+	pipe.SAdd(ctx, r.keyAll(), inst.ID)
+	pipe.SAdd(ctx, r.keyWorkflow(inst.Name), inst.ID)
+	pipe.SAdd(ctx, r.keyStatus(inst.Status), inst.ID)
 	_, _ = pipe.Exec(ctx)
 
 	return nil
 }
 
-func (s *RedisInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
+func (r *RedisInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 	ctx := context.Background()
 
 	data, err := encodeRedisPayload(inst)
@@ -102,25 +107,25 @@ func (s *RedisInstanceStore) UpdateInstance(inst *api.WorkflowInstance) error {
 	}
 
 	// Overwrite payload
-	if err := s.client.Set(ctx, s.keyInstance(inst.ID), data, 0).Err(); err != nil {
+	if err := r.client.Set(ctx, r.keyInstance(inst.ID), data, 0).Err(); err != nil {
 		return err
 	}
 
 	// Index updates: we just re-add; some stale index entries may remain if
 	// workflow name/status changed, but ListInstances will filter by payload.
-	pipe := s.client.TxPipeline()
-	pipe.SAdd(ctx, s.keyAll(), inst.ID)
-	pipe.SAdd(ctx, s.keyWorkflow(inst.Name), inst.ID)
-	pipe.SAdd(ctx, s.keyStatus(inst.Status), inst.ID)
+	pipe := r.client.TxPipeline()
+	pipe.SAdd(ctx, r.keyAll(), inst.ID)
+	pipe.SAdd(ctx, r.keyWorkflow(inst.Name), inst.ID)
+	pipe.SAdd(ctx, r.keyStatus(inst.Status), inst.ID)
 	_, _ = pipe.Exec(ctx)
 
 	return nil
 }
 
-func (s *RedisInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
+func (r *RedisInstanceStore) GetInstance(id string) (*api.WorkflowInstance, error) {
 	ctx := context.Background()
 
-	data, err := s.client.Get(ctx, s.keyInstance(id)).Bytes()
+	data, err := r.client.Get(ctx, r.keyInstance(id)).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, corep.ErrInstanceNotFound
@@ -130,7 +135,7 @@ func (s *RedisInstanceStore) GetInstance(id string) (*api.WorkflowInstance, erro
 	return decodeRedisPayload(data)
 }
 
-func (s *RedisInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.WorkflowInstance, error) {
+func (r *RedisInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.WorkflowInstance, error) {
 	ctx := context.Background()
 
 	var ids []string
@@ -138,16 +143,16 @@ func (s *RedisInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.
 
 	switch {
 	case filter.WorkflowName != "" && filter.Status != "":
-		ids, err = s.client.SInter(ctx,
-			s.keyWorkflow(filter.WorkflowName),
-			s.keyStatus(filter.Status),
+		ids, err = r.client.SInter(ctx,
+			r.keyWorkflow(filter.WorkflowName),
+			r.keyStatus(filter.Status),
 		).Result()
 	case filter.WorkflowName != "":
-		ids, err = s.client.SMembers(ctx, s.keyWorkflow(filter.WorkflowName)).Result()
+		ids, err = r.client.SMembers(ctx, r.keyWorkflow(filter.WorkflowName)).Result()
 	case filter.Status != "":
-		ids, err = s.client.SMembers(ctx, s.keyStatus(filter.Status)).Result()
+		ids, err = r.client.SMembers(ctx, r.keyStatus(filter.Status)).Result()
 	default:
-		ids, err = s.client.SMembers(ctx, s.keyAll()).Result()
+		ids, err = r.client.SMembers(ctx, r.keyAll()).Result()
 	}
 
 	if err != nil {
@@ -160,10 +165,10 @@ func (s *RedisInstanceStore) ListInstances(filter corep.InstanceFilter) ([]*api.
 		return []*api.WorkflowInstance{}, nil
 	}
 
-	pipe := s.client.Pipeline()
+	pipe := r.client.Pipeline()
 	cmds := make([]*redis.StringCmd, len(ids))
 	for i, id := range ids {
-		cmds[i] = pipe.Get(ctx, s.keyInstance(id))
+		cmds[i] = pipe.Get(ctx, r.keyInstance(id))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
 		return nil, err
@@ -265,4 +270,129 @@ func encodeRedisPayload(inst *api.WorkflowInstance) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+var (
+	// Lua script for acquiring a lease with re-entrant behavior for the same owner.
+	// Returns 1 if acquired/refreshed, 0 otherwise.
+	redisLeaseAcquireLua = `
+local key = KEYS[1]
+local owner = ARGV[1]
+local ttlms = tonumber(ARGV[2])
+
+local cur = redis.call('GET', key)
+if not cur then
+	redis.call('PSETEX', key, ttlms, owner)
+	return 1
+end
+if cur == owner then
+	redis.call('PEXPIRE', key, ttlms)
+	return 1
+end
+return 0
+`
+
+	// Lua script for renewing a lease. Returns 1 if renewed, 0 otherwise.
+	redisLeaseRenewLua = `
+local key = KEYS[1]
+local owner = ARGV[1]
+local ttlms = tonumber(ARGV[2])
+
+local cur = redis.call('GET', key)
+if not cur then
+	return 0
+end
+if cur == owner then
+	redis.call('PEXPIRE', key, ttlms)
+	return 1
+end
+return 0
+`
+
+	// Lua script for releasing a lease. Returns 1 if released, 0 otherwise.
+	redisLeaseReleaseLua = `
+local key = KEYS[1]
+local owner = ARGV[1]
+
+local cur = redis.call('GET', key)
+if not cur then
+	return 0
+end
+if cur == owner then
+	redis.call('DEL', key)
+	return 1
+end
+return 0
+`
+)
+
+func (r *RedisInstanceStore) TryAcquireLease(ctx context.Context, instanceID, owner string, ttl time.Duration) (bool, error) {
+	if ttl <= 0 {
+		return false, errors.New("ttl must be > 0")
+	}
+	res, err := r.client.Eval(ctx, redisLeaseAcquireLua, []string{r.keyLease(instanceID)}, owner, ttl.Milliseconds()).Result()
+	if err != nil {
+		return false, err
+	}
+	switch v := res.(type) {
+	case int64:
+		return v == 1, nil
+	case int:
+		return v == 1, nil
+	case string:
+		return v == "1", nil
+	default:
+		return false, nil
+	}
+}
+
+func (r *RedisInstanceStore) RenewLease(ctx context.Context, instanceID, owner string, ttl time.Duration) error {
+	if ttl <= 0 {
+		return errors.New("ttl must be > 0")
+	}
+	res, err := r.client.Eval(ctx, redisLeaseRenewLua, []string{r.keyLease(instanceID)}, owner, ttl.Milliseconds()).Result()
+	if err != nil {
+		return err
+	}
+	ok := false
+	switch v := res.(type) {
+	case int64:
+		ok = v == 1
+	case int:
+		ok = v == 1
+	case string:
+		ok = v == "1"
+	}
+	if !ok {
+		return api.ErrWorkflowInstanceLocked
+	}
+	return nil
+}
+
+func (r *RedisInstanceStore) ReleaseLease(ctx context.Context, instanceID, owner string) error {
+	// Idempotent: if lease doesn't exist, succeed.
+	res, err := r.client.Eval(ctx, redisLeaseReleaseLua, []string{r.keyLease(instanceID)}, owner).Result()
+	if err != nil {
+		return err
+	}
+	switch v := res.(type) {
+	case int64:
+		if v == 0 {
+			// Either missing or owned by someone else; treat missing as success.
+			// We distinguish by checking current value.
+			cur, gerr := r.client.Get(ctx, r.keyLease(instanceID)).Result()
+			if errors.Is(gerr, redis.Nil) {
+				return nil
+			}
+			if gerr != nil {
+				return gerr
+			}
+			if cur != owner && cur != "" {
+				return api.ErrWorkflowInstanceLocked
+			}
+		}
+	case int:
+		// same handling as above; simplest: do nothing (best-effort)
+	}
+	return nil
 }

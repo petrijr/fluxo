@@ -726,9 +726,15 @@ type WorkflowInstance struct {
 	Name        string
 	Version     string
 	Fingerprint string
-	Status      Status
-	Output      any
-	Err         error
+
+	// LeaseOwner and LeaseExpiresAt implement a lightweight distributed lock
+	// to ensure only one worker/engine executes an instance at a time.
+	LeaseOwner     string
+	LeaseExpiresAt time.Time
+
+	Status Status
+	Output any
+	Err    error
 
 	// Input is the original input provided to Run when this instance
 	// was first started. It is used for deterministic replay on resume.
@@ -813,10 +819,6 @@ type waitForSignalError struct {
 }
 
 // ComputeWorkflowFingerprintStrict computes a fingerprint intended for safe deploys.
-//
-// Compared to ComputeWorkflowFingerprint, this additionally incorporates:
-//   - step function identity (best-effort via runtime.FuncForPC)
-//   - build identity (best-effort via debug.ReadBuildInfo)
 //
 // The goal is to make it very unlikely that code changes can be re-registered
 // as the "same" workflow definition, which could otherwise violate deterministic replay.

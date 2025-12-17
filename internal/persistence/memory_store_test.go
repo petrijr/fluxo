@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/petrijr/fluxo/pkg/api"
@@ -43,7 +44,7 @@ func TestInMemoryStore_GetWorkflowNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for missing workflow")
 	}
-	if err != ErrWorkflowNotFound {
+	if !errors.Is(err, ErrWorkflowNotFound) {
 		t.Fatalf("expected ErrWorkflowNotFound, got %v", err)
 	}
 }
@@ -92,7 +93,7 @@ func TestInMemoryStore_GetInstanceNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for missing instance")
 	}
-	if err != ErrInstanceNotFound {
+	if !errors.Is(err, ErrInstanceNotFound) {
 		t.Fatalf("expected ErrInstanceNotFound, got %v", err)
 	}
 }

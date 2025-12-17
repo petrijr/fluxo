@@ -31,6 +31,8 @@ func GetMongoURI(t *testing.T) string {
 		t.Skipf("skipping Mongo tests: %v", mongoErr)
 	}
 
+	println(mongoURI)
+
 	return mongoURI
 }
 

@@ -3,6 +3,7 @@ package taskqueue
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -109,7 +110,7 @@ func (q *PostgresQueue) Dequeue(ctx context.Context) (*coreq.Task, error) {
 
 		if err != nil {
 			_ = tx.Rollback()
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				// Nothing available yet – wait a bit and retry using reusable timer.
 				tmr.Reset(100 * time.Millisecond)
 				select {

@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -17,6 +19,9 @@ type engineImpl struct {
 	workflows persistence.WorkflowStore
 	instances persistence.InstanceStore
 
+	engineID string
+	leaseTTL time.Duration
+
 	mu       sync.Mutex // only for nextID
 	nextID   int64
 	observer api.Observer
@@ -27,6 +32,20 @@ type engineImpl struct {
 type Config struct {
 	Persistence persistence.Persistence
 	Observer    api.Observer
+	// EngineID identifies this engine/worker for lease ownership.
+	// If empty, a random ID is generated.
+	EngineID string
+	// LeaseTTL controls how long instance execution leases last.
+	// If zero, a sensible default is used.
+	LeaseTTL time.Duration
+}
+
+func randomEngineID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("engine-%d", time.Now().UnixNano())
+	}
+	return "engine-" + hex.EncodeToString(b)
 }
 
 func NewInMemoryEngine() api.Engine {
@@ -71,10 +90,20 @@ func NewEngineWithConfig(cfg Config) api.Engine {
 	if obs == nil {
 		obs = api.NoopObserver{}
 	}
+	engineID := cfg.EngineID
+	if engineID == "" {
+		engineID = randomEngineID()
+	}
+	leaseTTL := cfg.LeaseTTL
+	if leaseTTL <= 0 {
+		leaseTTL = 30 * time.Second
+	}
 	return &engineImpl{
 		workflows: cfg.Persistence.Workflows,
 		instances: cfg.Persistence.Instances,
 		observer:  obs,
+		engineID:  engineID,
+		leaseTTL:  leaseTTL,
 	}
 }
 
@@ -215,6 +244,7 @@ func (e *engineImpl) GetInstance(ctx context.Context, id string) (*api.WorkflowI
 		// workflow definition is not registered/available (e.g. tests that seed
 		// instances directly, or older persisted instances).
 		if errors.Is(err, persistence.ErrWorkflowNotFound) {
+			e.releaseInstanceLease(context.Background(), inst.ID)
 			return inst, nil
 		}
 		return nil, err
@@ -224,6 +254,7 @@ func (e *engineImpl) GetInstance(ctx context.Context, id string) (*api.WorkflowI
 		return nil, api.ErrWorkflowDefinitionMismatch
 	}
 
+	e.releaseInstanceLease(context.Background(), inst.ID)
 	return inst, nil
 }
 
@@ -247,6 +278,14 @@ func (e *engineImpl) Resume(ctx context.Context, id string) (*api.WorkflowInstan
 	if inst.Status != api.StatusFailed {
 		return nil, fmt.Errorf("cannot resume instance %s in status %s", id, inst.Status)
 	}
+
+	if err := e.acquireInstanceLease(ctx, id); err != nil {
+		return nil, err
+	}
+	defer func() {
+		// Release on exit; executeSteps will keep renewing while running.
+		e.releaseInstanceLease(context.Background(), id)
+	}()
 
 	version := inst.Version
 	if version == "" {
@@ -287,6 +326,13 @@ func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload
 	if inst.Status != api.StatusWaiting {
 		return nil, fmt.Errorf("cannot signal instance %s in status %s", id, inst.Status)
 	}
+
+	if err := e.acquireInstanceLease(ctx, id); err != nil {
+		return nil, err
+	}
+	defer func() {
+		e.releaseInstanceLease(context.Background(), id)
+	}()
 
 	version := inst.Version
 	if version == "" {
@@ -354,6 +400,25 @@ func (e *engineImpl) nextInstanceID() string {
 	return fmt.Sprintf("wf-%d", e.nextID)
 }
 
+func (e *engineImpl) acquireInstanceLease(ctx context.Context, instanceID string) error {
+	acquired, err := e.instances.TryAcquireLease(ctx, instanceID, e.engineID, e.leaseTTL)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return api.ErrWorkflowInstanceLocked
+	}
+	return nil
+}
+
+func (e *engineImpl) renewInstanceLease(ctx context.Context, instanceID string) {
+	_ = e.instances.RenewLease(ctx, instanceID, e.engineID, e.leaseTTL)
+}
+
+func (e *engineImpl) releaseInstanceLease(ctx context.Context, instanceID string) {
+	_ = e.instances.ReleaseLease(ctx, instanceID, e.engineID)
+}
+
 func (e *engineImpl) executeSteps(
 	ctx context.Context,
 	def api.WorkflowDefinition,
@@ -365,6 +430,8 @@ func (e *engineImpl) executeSteps(
 
 	// Iterate through all steps
 	for i := startIndex; i < len(def.Steps); i++ {
+		// Extend lease while we work.
+		e.renewInstanceLease(ctx, inst.ID)
 		step := def.Steps[i]
 
 		// Idempotency: if we already have a cached result for this step,
@@ -460,6 +527,7 @@ func (e *engineImpl) executeSteps(
 				inst.Err = nil
 				// We could track sigName somewhere later if needed.
 				_ = e.instances.UpdateInstance(inst)
+				e.releaseInstanceLease(context.Background(), inst.ID)
 				return inst, err
 			}
 
@@ -469,6 +537,7 @@ func (e *engineImpl) executeSteps(
 				inst.Status = api.StatusWaiting
 				inst.Err = nil
 				_ = e.instances.UpdateInstance(inst)
+				e.releaseInstanceLease(context.Background(), inst.ID)
 				return inst, err
 			}
 
@@ -476,6 +545,7 @@ func (e *engineImpl) executeSteps(
 				inst.Status = api.StatusWaiting
 				inst.Err = nil
 				_ = e.instances.UpdateInstance(inst)
+				e.releaseInstanceLease(context.Background(), inst.ID)
 				return inst, err
 			}
 
@@ -487,6 +557,7 @@ func (e *engineImpl) executeSteps(
 				inst.Err = lastErr
 				_ = e.instances.UpdateInstance(inst)
 				e.observer.OnWorkflowFailed(ctx, inst, lastErr)
+				e.releaseInstanceLease(context.Background(), inst.ID)
 				return inst, lastErr
 			}
 
@@ -527,6 +598,7 @@ func (e *engineImpl) executeSteps(
 	_ = e.instances.UpdateInstance(inst)
 
 	e.observer.OnWorkflowCompleted(ctx, inst)
+	e.releaseInstanceLease(context.Background(), inst.ID)
 
 	return inst, nil
 }
