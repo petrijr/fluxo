@@ -1,5 +1,5 @@
 # **Fluxo — Lightweight Workflow Engine for Go**
-![Coverage](https://img.shields.io/badge/Coverage-78.3%25-brightgreen)
+![Coverage](https://img.shields.io/badge/Coverage-76.8%25-brightgreen)
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/petrijr/fluxo.svg)](https://pkg.go.dev/github.com/petrijr/fluxo)
 [![Go Report Card](https://goreportcard.com/badge/github.com/petrijr/fluxo)](https://goreportcard.com/report/github.com/petrijr/fluxo)
