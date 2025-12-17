@@ -216,3 +216,49 @@ func TestSQLiteQueue_DequeueCancelsWhileWaitingForScheduledTask(t *testing.T) {
 		t.Fatalf("Dequeue did not appear to honor cancellation; elapsed=%v, delay=%v", elapsed, delay)
 	}
 }
+
+func TestSQLiteQueue_ConcurrentDequeue_NoDuplicates(t *testing.T) {
+	q := newTestSQLiteQueue(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	task := Task{
+		Type:         TaskTypeStartWorkflow,
+		WorkflowName: "wf",
+		Payload:      "x",
+		EnqueuedAt:   time.Now(),
+		NotBefore:    time.Now().Add(-time.Millisecond),
+		Attempts:     0,
+	}
+	if err := q.Enqueue(ctx, task); err != nil {
+		t.Fatalf("Enqueue failed: %v", err)
+	}
+
+	results := make(chan *Task, 2)
+	errs := make(chan error, 2)
+
+	deq := func() {
+		got, err := q.Dequeue(ctx)
+		errs <- err
+		results <- got
+	}
+
+	go deq()
+	go deq()
+
+	var tasks []*Task
+	for i := 0; i < 2; i++ {
+		_ = <-errs
+		tasks = append(tasks, <-results)
+	}
+
+	count := 0
+	for _, tsk := range tasks {
+		if tsk != nil {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one task dequeued, got %d (%v)", count, tasks)
+	}
+}

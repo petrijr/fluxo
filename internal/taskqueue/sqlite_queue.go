@@ -90,11 +90,8 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 
 		now := time.Now().UnixNano()
 
-		tx, err := q.db.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-
+		// Atomically claim+remove the next runnable task. This prevents races where two
+		// workers could select the same row and both think they dequeued it.
 		var (
 			id          int64
 			typeStr     string
@@ -107,17 +104,20 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 			attempts    int
 		)
 
-		row := tx.QueryRowContext(ctx, `
-			SELECT id, type, workflow_name, instance_id, signal_name, payload, enqueued_at, not_before, attempts
-			FROM tasks
-			WHERE not_before <= ?
-			ORDER BY not_before, id
-			LIMIT 1`, now)
-		err = row.Scan(&id, &typeStr, &wfName, &instanceID, &signalName, &payload, &enqueuedInt, &notBefore, &attempts)
+		row := q.db.QueryRowContext(ctx, `
+			DELETE FROM tasks
+			WHERE id = (
+				SELECT id FROM tasks
+				WHERE not_before <= ?
+				ORDER BY not_before, id
+				LIMIT 1
+			)
+			RETURNING id, type, workflow_name, instance_id, signal_name, payload, enqueued_at, not_before, attempts
+		`, now)
+
+		err := row.Scan(&id, &typeStr, &wfName, &instanceID, &signalName, &payload, &enqueuedInt, &notBefore, &attempts)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				_ = tx.Rollback()
-				// Nothing available: sleep a bit and retry.
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
@@ -125,17 +125,6 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 					continue
 				}
 			}
-			_ = tx.Rollback()
-			return nil, err
-		}
-
-		// Delete the row we just claimed.
-		if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, id); err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
-
-		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
 
@@ -145,7 +134,7 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 		}
 
 		task := &Task{
-			ID:   "", // numeric id is internal; expose empty string for now
+			ID:   "",
 			Type: TaskType(typeStr),
 
 			WorkflowName: func() string {
