@@ -17,7 +17,7 @@ func ExampleWorker() {
 
 	// Engine and queue (use Fluxo helpers so this matches real usage).
 	eng := fluxo.NewInMemoryEngine()
-	queue := fluxo.NewInMemoryQueue(1024)
+	queue := fluxo.NewInMemoryQueue()
 
 	// Define and register a simple workflow.
 	flow := fluxo.New("BackgroundJob").

@@ -2,13 +2,23 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/gob"
+	"encoding/hex"
 	"errors"
 	"time"
 
 	"github.com/petrijr/fluxo/internal/taskqueue"
 	"github.com/petrijr/fluxo/pkg/api"
 )
+
+func randomWorkerID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "worker-" + time.Now().Format("20060102150405.000000000")
+	}
+	return "worker-" + hex.EncodeToString(b)
+}
 
 func init() {
 	gob.Register(StartWorkflowPayload{})
@@ -33,6 +43,14 @@ type Config struct {
 	// parks on a signal before scheduling an automatic timeout signal.
 	// If zero, no auto-timeout signals are scheduled.
 	DefaultSignalTimeout time.Duration
+
+	// WorkerID identifies this worker for task leases.
+	// If empty, a random id is generated.
+	WorkerID string
+
+	// LeaseTTL is the visibility timeout for dequeued tasks.
+	// If zero, a sensible default is used.
+	LeaseTTL time.Duration
 }
 
 // Worker pulls tasks from a Queue and executes them using an Engine.
@@ -53,6 +71,12 @@ func New(engine api.Engine, queue taskqueue.Queue) *Worker {
 func NewWithConfig(engine api.Engine, queue taskqueue.Queue, cfg Config) *Worker {
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = 1
+	}
+	if cfg.WorkerID == "" {
+		cfg.WorkerID = randomWorkerID()
+	}
+	if cfg.LeaseTTL <= 0 {
+		cfg.LeaseTTL = 30 * time.Second
 	}
 	return &Worker{
 		engine: engine,
@@ -132,7 +156,7 @@ func (w *Worker) EnqueueSignalAt(ctx context.Context, instanceID string, name st
 //   - processed == false, err == nil: no task processed (only happens if ctx cancelled before a task was obtained)
 //   - processed == true: a task was processed; err indicates whether the handler succeeded.
 func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
-	task, err := w.queue.Dequeue(ctx)
+	task, err := w.queue.Dequeue(ctx, w.cfg.WorkerID, w.cfg.LeaseTTL)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false, err
@@ -145,27 +169,35 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 
 	handleErr := func(err error) error {
 		if err == nil {
+			// Successful processing: ack the leased task.
+			if ackErr := w.queue.Ack(ctx, task.ID, w.cfg.WorkerID); ackErr != nil {
+				return ackErr
+			}
 			return nil
 		}
 
 		// Check whether we should retry this task at the worker level.
 		if task.Attempts+1 < w.cfg.MaxAttempts {
-			retryTask := *task
-			retryTask.Attempts = task.Attempts + 1
+			nextAttempts := task.Attempts + 1
+			nb := time.Now()
 			if w.cfg.Backoff > 0 {
-				retryTask.NotBefore = time.Now().Add(w.cfg.Backoff)
-			} else {
-				retryTask.NotBefore = time.Now()
+				nb = nb.Add(w.cfg.Backoff)
 			}
-			if enqErr := w.queue.Enqueue(ctx, retryTask); enqErr != nil {
-				// Failed to schedule retry; propagate original error.
+			// Release back to queue with updated schedule/attempts.
+			if nerr := w.queue.Nack(ctx, task.ID, w.cfg.WorkerID, nb, nextAttempts); nerr != nil {
+				// If we can't Nack, fall back to Ack+re-enqueue best effort.
+				_ = w.queue.Ack(ctx, task.ID, w.cfg.WorkerID)
+				retryTask := *task
+				retryTask.Attempts = nextAttempts
+				retryTask.NotBefore = nb
+				_ = w.queue.Enqueue(ctx, retryTask)
 				return err
 			}
-			// Retry scheduled; treat this processing as successful.
 			return nil
 		}
 
-		// No retries left.
+		// No retry: ack (remove) the task and propagate.
+		_ = w.queue.Ack(ctx, task.ID, w.cfg.WorkerID)
 		return err
 	}
 
@@ -196,7 +228,7 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 				}
 				// We successfully parked the workflow and possibly scheduled a timeout.
 				// This is not a failure of the task itself.
-				return true, nil
+				return true, handleErr(nil)
 			}
 
 			// Other errors: use worker-level retry logic.
@@ -204,7 +236,7 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 		}
 
 		// Run succeeded normally.
-		return true, nil
+		return true, handleErr(nil)
 
 	case taskqueue.TaskTypeSignal:
 		// Deliver the signal.
@@ -214,12 +246,14 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 		// - If the instance is no longer waiting (e.g., approved early),
 		//   Signal will fail; we just swallow the error and do not retry.
 		if _, isTimeout := task.Payload.(api.TimeoutPayload); isTimeout {
-			return true, nil
+			_ = w.queue.Ack(ctx, task.ID, w.cfg.WorkerID)
+			return true, handleErr(nil)
 		}
 
 		return true, handleErr(sigErr)
 
 	default:
+		_ = w.queue.Ack(ctx, task.ID, w.cfg.WorkerID)
 		return true, errors.New("unknown task type: " + string(task.Type))
 	}
 }

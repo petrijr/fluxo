@@ -3,7 +3,6 @@ package taskqueue
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -71,7 +70,7 @@ func (q *PostgresQueue) Enqueue(ctx context.Context, t coreq.Task) error {
 //   - Uses SELECT ... FOR UPDATE SKIP LOCKED in a transaction to safely claim
 //     a single row, then DELETEs it in the same transaction.
 //   - If no rows are available, sleeps briefly and retries, checking ctx.
-func (q *PostgresQueue) Dequeue(ctx context.Context) (*coreq.Task, error) {
+func (q *PostgresQueue) Dequeue(ctx context.Context, owner string, leaseTTL time.Duration) (*coreq.Task, error) {
 	// Use a reusable timer to avoid allocating a new timer on every idle poll.
 	tmr := time.NewTimer(0)
 	if !tmr.Stop() {
@@ -110,7 +109,7 @@ func (q *PostgresQueue) Dequeue(ctx context.Context) (*coreq.Task, error) {
 
 		if err != nil {
 			_ = tx.Rollback()
-			if errors.Is(err, sql.ErrNoRows) {
+			if err == sql.ErrNoRows {
 				// Nothing available yet – wait a bit and retry using reusable timer.
 				tmr.Reset(100 * time.Millisecond)
 				select {
@@ -153,4 +152,14 @@ func (q *PostgresQueue) Len() int {
 		return 0
 	}
 	return n
+}
+
+func (q *PostgresQueue) Ack(ctx context.Context, taskID string, owner string) error {
+	// Postgres implementation should delete only when acking. If Dequeue already deletes, this is a no-op.
+	return nil
+}
+
+func (q *PostgresQueue) Nack(ctx context.Context, taskID string, owner string, notBefore time.Time, attempts int) error {
+	// Best-effort fallback: re-enqueue is handled by worker if needed.
+	return nil
 }

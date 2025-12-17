@@ -65,7 +65,7 @@ func TestFluxo_TopLevelWrappers_RunGetListSignalRecover(t *testing.T) {
 
 func TestFluxo_QueuesAndWorkers_Constructors(t *testing.T) {
 	eng := NewInMemoryEngine()
-	q := NewInMemoryQueue(16)
+	q := NewInMemoryQueue()
 	if q == nil {
 		t.Fatalf("queue is nil")
 	}

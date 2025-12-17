@@ -16,7 +16,7 @@ func main() {
 	ctx := context.Background()
 
 	eng := fluxo.NewInMemoryEngine()
-	q := fluxo.NewInMemoryQueue(128)
+	q := fluxo.NewInMemoryQueue()
 
 	// Auto-timeout any "waiting for signal" park after 2 seconds.
 	w := fluxo.NewWorkerWithConfig(eng, q, fluxo.Config{

@@ -47,7 +47,7 @@ func TestWorker_ProcessesStartWorkflowTasks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			eng := factory(t)
-			queue := taskqueue.NewInMemoryQueue(10)
+			queue := taskqueue.NewInMemoryQueue()
 			w := New(eng, queue)
 
 			// Simple workflow: add 1 to an int input.
@@ -134,7 +134,7 @@ func TestWorker_ProcessesSignalTasks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			eng := factory(t)
-			queue := taskqueue.NewInMemoryQueue(10)
+			queue := taskqueue.NewInMemoryQueue()
 			w := New(eng, queue)
 
 			// approval-like workflow:

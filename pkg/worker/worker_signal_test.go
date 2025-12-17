@@ -25,8 +25,18 @@ func (f *fakeQueue) Enqueue(ctx context.Context, t taskqueue.Task) error {
 	return f.enqueueErr
 }
 
-func (f *fakeQueue) Dequeue(ctx context.Context) (*taskqueue.Task, error) {
+func (f *fakeQueue) Dequeue(ctx context.Context, owner string, leaseTTL time.Duration) (*taskqueue.Task, error) {
 	return f.dequeueResult, f.dequeueErr
+}
+
+// Ack acknowledges successful processing of a leased task and removes it from the queue.
+func (f *fakeQueue) Ack(ctx context.Context, taskID string, owner string) error {
+	return nil
+}
+
+// Nack releases a leased task back to the queue, optionally updating its schedule and attempts.
+func (f *fakeQueue) Nack(ctx context.Context, taskID string, owner string, notBefore time.Time, attempts int) error {
+	return nil
 }
 
 func (f *fakeQueue) Len() int {

@@ -28,8 +28,14 @@ func TestRedisQueueSuite(t *testing.T) {
 
 func (r *RedisQueueTestSuite) SetupTest() {
 	ctx := context.Background()
-	err := r.client.Del(ctx, r.queue.key).Err()
-	r.NoErrorf(err, "redis DEL failed: %s", "formatted")
+	err := r.client.Del(ctx,
+		r.queue.readyKey,
+		r.queue.inflightKey,
+		r.queue.payloadKey,
+		r.queue.notBeforeKey,
+		r.queue.ownerKey,
+	).Err()
+	r.NoError(err)
 }
 
 // newTestRedisQueue connects to Redis and creates a queue.
@@ -68,7 +74,7 @@ func (r *RedisQueueTestSuite) TestRedisQueue_EnqueueDequeue() {
 	errCh := make(chan error, 1)
 
 	go func() {
-		task, err := r.queue.Dequeue(ctx)
+		task, err := r.queue.Dequeue(ctx, "w1", 200*time.Millisecond)
 		if err != nil {
 			errCh <- err
 			return
@@ -88,6 +94,7 @@ func (r *RedisQueueTestSuite) TestRedisQueue_EnqueueDequeue() {
 		r.Failf("Dequeue returned error", "Dequeue returned error: %v", err)
 	case task := <-tasksCh:
 		r.NotNil(task, "expected non-nil task from Dequeue")
+		r.NoError(r.queue.Ack(ctx, task.ID, "w1"))
 	case <-time.After(3 * time.Second):
 		r.Failf("timed out waiting for dequeued task", "timed out waiting for dequeued task")
 	}

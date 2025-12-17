@@ -67,7 +67,7 @@ func (m *MongoQueueTestSuite) TestMongoQueue_EnqueueDequeue() {
 
 	// Worker goroutine: blocks on Dequeue until it gets a task or error.
 	go func() {
-		task, err := m.queue.Dequeue(ctx)
+		task, err := m.queue.Dequeue(ctx, "w1", 200*time.Millisecond)
 		if err != nil {
 			errCh <- err
 			return
@@ -89,6 +89,7 @@ func (m *MongoQueueTestSuite) TestMongoQueue_EnqueueDequeue() {
 		m.Failf("Dequeue returned error", "Dequeue returned error: %v", err)
 	case task := <-tasksCh:
 		m.NotNil(task, "expected non-nil task from Dequeue")
+		m.NoError(m.queue.Ack(ctx, task.ID, "w1"))
 	case <-time.After(3 * time.Second):
 		m.Failf("timed out waiting for dequeued task", "timed out waiting for dequeued task")
 	}

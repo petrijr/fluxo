@@ -50,7 +50,13 @@ type Queue interface {
 
 	// Dequeue removes and returns the next task, blocking until one is available
 	// or the context is cancelled.
-	Dequeue(ctx context.Context) (*Task, error)
+	Dequeue(ctx context.Context, owner string, leaseTTL time.Duration) (*Task, error)
+
+	// Ack acknowledges successful processing of a leased task and removes it from the queue.
+	Ack(ctx context.Context, taskID string, owner string) error
+
+	// Nack releases a leased task back to the queue, optionally updating its schedule and attempts.
+	Nack(ctx context.Context, taskID string, owner string, notBefore time.Time, attempts int) error
 
 	// Len returns the approximate number of tasks queued.
 	Len() int

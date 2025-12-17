@@ -60,7 +60,7 @@ func (p *PostgresQueueTestSuite) TestPostgresQueue_EnqueueDequeue() {
 
 	// Worker goroutine: blocks on Dequeue until it gets a task or error.
 	go func() {
-		task, err := p.queue.Dequeue(ctx)
+		task, err := p.queue.Dequeue(ctx, "w1", 200*time.Millisecond)
 		if err != nil {
 			errCh <- err
 			return

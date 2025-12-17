@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/gob"
 	"errors"
+	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -16,6 +18,9 @@ type SQLiteQueue struct {
 	db           *sql.DB
 	pollInterval time.Duration
 }
+
+// Ensure SQLiteQueue implements Queue.
+var _ Queue = (*SQLiteQueue)(nil)
 
 // NewSQLiteQueue initializes the tasks table in the given DB and returns a new queue.
 func NewSQLiteQueue(db *sql.DB) (*SQLiteQueue, error) {
@@ -40,7 +45,9 @@ func (q *SQLiteQueue) initSchema() error {
 			payload BLOB,
 			enqueued_at INTEGER NOT NULL,
 			not_before INTEGER NOT NULL,
-			attempts INTEGER NOT NULL
+			attempts INTEGER NOT NULL,
+			leased_by TEXT NOT NULL DEFAULT '',
+			lease_expires_at INTEGER NOT NULL DEFAULT 0
 		);
 	`)
 	return err
@@ -66,8 +73,8 @@ func (q *SQLiteQueue) Enqueue(ctx context.Context, t Task) error {
 	}
 
 	_, err = q.db.ExecContext(ctx, `
-		INSERT INTO tasks (type, workflow_name, instance_id, signal_name, payload, enqueued_at, not_before, attempts)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO tasks (type, workflow_name, instance_id, signal_name, payload, enqueued_at, not_before, attempts, leased_by, lease_expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 0)`,
 		string(t.Type),
 		t.WorkflowName,
 		t.InstanceID,
@@ -80,7 +87,10 @@ func (q *SQLiteQueue) Enqueue(ctx context.Context, t Task) error {
 	return err
 }
 
-func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
+func (q *SQLiteQueue) Dequeue(ctx context.Context, owner string, leaseTTL time.Duration) (*Task, error) {
+	if leaseTTL <= 0 {
+		return nil, errors.New("leaseTTL must be > 0")
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -88,10 +98,11 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 		default:
 		}
 
-		now := time.Now().UnixNano()
+		now := time.Now()
+		nowInt := now.UnixNano()
+		expiresInt := now.Add(leaseTTL).UnixNano()
 
-		// Atomically claim+remove the next runnable task. This prevents races where two
-		// workers could select the same row and both think they dequeued it.
+		// Atomically claim the next runnable *and currently unleased/expired* task.
 		var (
 			id          int64
 			typeStr     string
@@ -105,15 +116,17 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 		)
 
 		row := q.db.QueryRowContext(ctx, `
-			DELETE FROM tasks
+			UPDATE tasks
+			SET leased_by = ?, lease_expires_at = ?
 			WHERE id = (
 				SELECT id FROM tasks
 				WHERE not_before <= ?
+				AND (leased_by = '' OR lease_expires_at <= ?)
 				ORDER BY not_before, id
 				LIMIT 1
 			)
 			RETURNING id, type, workflow_name, instance_id, signal_name, payload, enqueued_at, not_before, attempts
-		`, now)
+		`, owner, expiresInt, nowInt, nowInt)
 
 		err := row.Scan(&id, &typeStr, &wfName, &instanceID, &signalName, &payload, &enqueuedInt, &notBefore, &attempts)
 		if err != nil {
@@ -134,7 +147,7 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 		}
 
 		task := &Task{
-			ID:   "",
+			ID:   fmt.Sprintf("%d", id),
 			Type: TaskType(typeStr),
 
 			WorkflowName: func() string {
@@ -163,6 +176,32 @@ func (q *SQLiteQueue) Dequeue(ctx context.Context) (*Task, error) {
 
 		return task, nil
 	}
+}
+
+func (q *SQLiteQueue) Ack(ctx context.Context, taskID string, owner string) error {
+	id, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil {
+		return err
+	}
+	res, err := q.db.ExecContext(ctx, `DELETE FROM tasks WHERE id = ? AND leased_by = ?`, id, owner)
+	if err != nil {
+		return err
+	}
+	_, _ = res.RowsAffected()
+	return nil
+}
+
+func (q *SQLiteQueue) Nack(ctx context.Context, taskID string, owner string, notBefore time.Time, attempts int) error {
+	id, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil {
+		return err
+	}
+	_, err = q.db.ExecContext(ctx, `
+		UPDATE tasks
+		SET leased_by = '', lease_expires_at = 0, not_before = ?, attempts = ?
+		WHERE id = ? AND leased_by = ?`,
+		notBefore.UnixNano(), attempts, id, owner)
+	return err
 }
 
 func (q *SQLiteQueue) Len() int {

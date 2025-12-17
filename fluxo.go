@@ -112,8 +112,8 @@ func RecoverStuckInstances(ctx context.Context, eng Engine) (int, error) {
 	return eng.RecoverStuckInstances(ctx)
 }
 
-func NewInMemoryQueue(size int) Queue {
-	return taskqueue.NewInMemoryQueue(size)
+func NewInMemoryQueue() Queue {
+	return taskqueue.NewInMemoryQueue()
 }
 
 func NewSQLiteQueue(db *sql.DB) (Queue, error) {

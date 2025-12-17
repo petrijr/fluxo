@@ -50,7 +50,7 @@ type LocalRunner struct {
 // deployments.
 func NewLocalRunner() *LocalRunner {
 	eng := NewInMemoryEngine()
-	q := taskqueue.NewInMemoryQueue(1024)
+	q := taskqueue.NewInMemoryQueue()
 	w := worker.New(eng, q)
 
 	return &LocalRunner{

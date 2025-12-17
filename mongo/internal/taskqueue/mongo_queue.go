@@ -3,7 +3,9 @@ package taskqueue
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/gob"
+	"encoding/hex"
 	"errors"
 	"log"
 	"time"
@@ -28,6 +30,12 @@ type MongoQueue struct {
 	coll *mongo.Collection
 }
 
+func newTaskID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 // NewMongoQueue creates a Mongo-backed queue.
 // dbName defaults to "fluxo", collName to "queue_tasks".
 func NewMongoQueue(client *mongo.Client, dbName, collName string) *MongoQueue {
@@ -46,9 +54,13 @@ func NewMongoQueue(client *mongo.Client, dbName, collName string) *MongoQueue {
 var _ coreq.Queue = (*MongoQueue)(nil)
 
 type mongoQueueDoc struct {
-	ID        string    `bson:"_id"`
-	Payload   []byte    `bson:"payload"`
-	CreatedAt time.Time `bson:"created_at"`
+	ID             string    `bson:"_id"`
+	Payload        []byte    `bson:"payload"`
+	CreatedAt      time.Time `bson:"created_at"`
+	NotBefore      int64     `bson:"not_before"`
+	Attempts       int       `bson:"attempts"`
+	LeasedBy       string    `bson:"leased_by,omitempty"`
+	LeaseExpiresAt int64     `bson:"lease_expires_at,omitempty"`
 }
 
 // These are named differently to avoid clashing with any other encodeTask/decodeTask.
@@ -75,10 +87,19 @@ func (q *MongoQueue) Enqueue(ctx context.Context, t coreq.Task) error {
 		return err
 	}
 
+	if t.ID == "" {
+		t.ID = newTaskID()
+	}
+	nb := t.NotBefore
+	if nb.IsZero() {
+		nb = time.Now()
+	}
 	doc := mongoQueueDoc{
 		ID:        t.ID,
 		Payload:   data,
 		CreatedAt: time.Now().UTC(),
+		NotBefore: nb.UnixNano(),
+		Attempts:  t.Attempts,
 	}
 
 	_, err = q.coll.InsertOne(ctx, doc)
@@ -86,9 +107,12 @@ func (q *MongoQueue) Enqueue(ctx context.Context, t coreq.Task) error {
 }
 
 // Dequeue blocks (via polling) until a task is available or ctx is cancelled.
-func (q *MongoQueue) Dequeue(ctx context.Context) (*coreq.Task, error) {
-	// Use a reusable timer to avoid allocating a new timer on every idle poll.
-	// Initialize stopped; reset only when needed.
+func (q *MongoQueue) Dequeue(ctx context.Context, owner string, leaseTTL time.Duration) (*coreq.Task, error) {
+	if leaseTTL <= 0 {
+		return nil, errors.New("leaseTTL must be > 0")
+	}
+
+	// Reusable timer for polling when no tasks are available.
 	tmr := time.NewTimer(0)
 	if !tmr.Stop() {
 		select {
@@ -105,18 +129,36 @@ func (q *MongoQueue) Dequeue(ctx context.Context) (*coreq.Task, error) {
 		default:
 		}
 
-		var doc mongoQueueDoc
-		err := q.coll.FindOneAndDelete(
-			ctx,
-			bson.M{},
-			&options.FindOneAndDeleteOptions{
-				Sort: bson.D{{Key: "created_at", Value: 1}},
+		now := time.Now().UTC()
+		nowInt := now.UnixNano()
+		expires := now.Add(leaseTTL).UnixNano()
+
+		filter := bson.M{
+			"not_before": bson.M{"$lte": nowInt},
+			"$or": []bson.M{
+				{"leased_by": bson.M{"$exists": false}},
+				{"leased_by": ""},
+				{"lease_expires_at": bson.M{"$lte": nowInt}},
+				{"leased_by": owner},
 			},
+		}
+
+		update := bson.M{"$set": bson.M{"leased_by": owner, "lease_expires_at": expires}}
+
+		var doc mongoQueueDoc
+		opts := options.FindOneAndUpdate().
+			SetSort(bson.D{{Key: "not_before", Value: 1}, {Key: "created_at", Value: 1}}).
+			SetReturnDocument(options.After)
+		err := q.coll.FindOneAndUpdate(
+			ctx,
+			filter,
+			update,
+			opts,
 		).Decode(&doc)
 
 		if err != nil {
 			if errors.Is(err, mongo.ErrNoDocuments) {
-				// No tasks yet, wait a bit using a reusable timer.
+				// No tasks yet, wait a bit.
 				tmr.Reset(100 * time.Millisecond)
 				select {
 				case <-ctx.Done():
@@ -128,7 +170,14 @@ func (q *MongoQueue) Dequeue(ctx context.Context) (*coreq.Task, error) {
 			return nil, err
 		}
 
-		return mongoDecodeTask(doc.Payload)
+		task, err := mongoDecodeTask(doc.Payload)
+		if err != nil {
+			return nil, err
+		}
+		task.ID = doc.ID
+		task.Attempts = doc.Attempts
+		task.NotBefore = time.Unix(0, doc.NotBefore)
+		return task, nil
 	}
 }
 
@@ -143,4 +192,22 @@ func (q *MongoQueue) Len() int {
 		return 0
 	}
 	return int(n)
+}
+
+func (q *MongoQueue) Ack(ctx context.Context, taskID string, owner string) error {
+	_, err := q.coll.DeleteOne(ctx, bson.M{"_id": taskID, "leased_by": owner})
+	return err
+}
+
+func (q *MongoQueue) Nack(ctx context.Context, taskID string, owner string, notBefore time.Time, attempts int) error {
+	_, err := q.coll.UpdateOne(ctx,
+		bson.M{"_id": taskID, "leased_by": owner},
+		bson.M{"$set": bson.M{
+			"leased_by":        "",
+			"lease_expires_at": int64(0),
+			"not_before":       notBefore.UnixNano(),
+			"attempts":         attempts,
+		}},
+	)
+	return err
 }
