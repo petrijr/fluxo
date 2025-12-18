@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/petrijr/fluxo/internal/persistence"
+	"github.com/petrijr/fluxo/internal/taskqueue"
 	"github.com/petrijr/fluxo/pkg/api"
 )
 
@@ -25,6 +26,8 @@ type engineImpl struct {
 	mu       sync.Mutex // only for nextID
 	nextID   int64
 	observer api.Observer
+	queue    taskqueue.Queue
+	events   persistence.EventStore
 }
 
 // Config describes how to construct an engineImpl.
@@ -32,6 +35,7 @@ type engineImpl struct {
 type Config struct {
 	Persistence persistence.Persistence
 	Observer    api.Observer
+	Queue       taskqueue.Queue
 	// EngineID identifies this engine/worker for lease ownership.
 	// If empty, a random ID is generated.
 	EngineID string
@@ -58,6 +62,7 @@ func NewInMemoryEngineWithObserver(obs api.Observer) api.Engine {
 		Persistence: persistence.Persistence{
 			Workflows: mem,
 			Instances: mem,
+			Events:    mem,
 		},
 		Observer: obs,
 	})
@@ -74,11 +79,16 @@ func NewSQLiteEngineWithObserver(db *sql.DB, obs api.Observer) (api.Engine, erro
 	}
 	// Workflow definitions remain in-memory.
 	memWF := persistence.NewInMemoryStore()
+	evStore, err := persistence.NewSQLiteEventStore(db)
+	if err != nil {
+		return nil, err
+	}
 
 	return NewEngineWithConfig(Config{
 		Persistence: persistence.Persistence{
 			Workflows: memWF,
 			Instances: inst,
+			Events:    evStore,
 		},
 		Observer: obs,
 	}), nil
@@ -104,6 +114,8 @@ func NewEngineWithConfig(cfg Config) api.Engine {
 		observer:  obs,
 		engineID:  engineID,
 		leaseTTL:  leaseTTL,
+		queue:     cfg.Queue,
+		events:    cfg.Persistence.Events,
 	}
 }
 
@@ -185,6 +197,8 @@ func (e *engineImpl) Run(ctx context.Context, name string, input any) (*api.Work
 		return inst, err
 	}
 
+	e.emitEvent(ctx, inst, api.EventWorkflowStarted, -1, "")
+
 	return e.executeSteps(ctx, def, inst, 0, input)
 }
 
@@ -221,6 +235,148 @@ func (e *engineImpl) RunVersion(
 	}
 
 	return e.executeSteps(ctx, def, inst, 0, inst.Input)
+}
+
+// Start creates an instance and schedules it for execution if a queue is configured.
+// If no queue is configured, it falls back to synchronous Run.
+func (e *engineImpl) Start(ctx context.Context, name string, input any) (*api.WorkflowInstance, error) {
+	if e.queue == nil {
+		return e.Run(ctx, name, input)
+	}
+	def, err := e.workflows.GetLatestWorkflow(name)
+	if err != nil {
+		return nil, err
+	}
+	inst := &api.WorkflowInstance{
+		ID:          e.nextInstanceID(),
+		Name:        def.Name,
+		Version:     def.Version,
+		Fingerprint: def.Fingerprint,
+		Status:      api.StatusPending,
+		CurrentStep: 0,
+		Input:       input,
+		StepResults: make(map[int]any),
+	}
+	e.observer.OnWorkflowStart(ctx, inst)
+	if err := e.instances.SaveInstance(inst); err != nil {
+		inst.Status = api.StatusFailed
+		inst.Err = err
+		e.observer.OnWorkflowFailed(ctx, inst, err)
+		return inst, err
+	}
+	e.emitEvent(ctx, inst, api.EventWorkflowEnqueued, -1, "start")
+	// Enqueue a start task tied to this instance ID.
+	err = e.queue.Enqueue(ctx, taskqueue.Task{
+		Type:         taskqueue.TaskTypeStartWorkflow,
+		WorkflowName: inst.Name,
+		InstanceID:   inst.ID,
+		Payload:      api.StartWorkflowPayload{Input: input},
+		EnqueuedAt:   time.Now(),
+	})
+	return inst, err
+}
+
+// StartVersion schedules an explicit workflow version.
+func (e *engineImpl) StartVersion(ctx context.Context, name, version string, input any) (*api.WorkflowInstance, error) {
+	if e.queue == nil {
+		return e.RunVersion(ctx, name, version, input)
+	}
+	def, err := e.workflows.GetWorkflow(name, version)
+	if err != nil {
+		return nil, err
+	}
+	inst := &api.WorkflowInstance{
+		ID:          e.nextInstanceID(),
+		Name:        def.Name,
+		Version:     def.Version,
+		Fingerprint: def.Fingerprint,
+		Status:      api.StatusPending,
+		CurrentStep: 0,
+		Input:       input,
+		StepResults: make(map[int]any),
+	}
+	e.observer.OnWorkflowStart(ctx, inst)
+	if err := e.instances.SaveInstance(inst); err != nil {
+		inst.Status = api.StatusFailed
+		inst.Err = err
+		e.observer.OnWorkflowFailed(ctx, inst, err)
+		return inst, err
+	}
+	e.emitEvent(ctx, inst, api.EventWorkflowEnqueued, -1, "start")
+	err = e.queue.Enqueue(ctx, taskqueue.Task{
+		Type:         taskqueue.TaskTypeStartWorkflow,
+		WorkflowName: inst.Name,
+		InstanceID:   inst.ID,
+		Payload:      api.StartWorkflowPayload{Input: input},
+		EnqueuedAt:   time.Now(),
+	})
+	return inst, err
+}
+
+// RunInstance runs an existing (previously created) instance immediately.
+// This is used by workers to avoid creating a new instance when processing queued start tasks.
+func (e *engineImpl) RunInstance(ctx context.Context, instanceID string) (*api.WorkflowInstance, error) {
+	inst, err := e.instances.GetInstance(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	def, err := e.workflows.GetWorkflow(inst.Name, inst.Version)
+	if err != nil {
+		return inst, err
+	}
+	if err := e.validateWorkflowFingerprint(def); err != nil {
+		inst.Status = api.StatusFailed
+		inst.Err = err
+		_ = e.instances.UpdateInstance(inst)
+		e.emitEvent(ctx, inst, api.EventWorkflowFailed, -1, err.Error())
+		return inst, err
+	}
+	if err := e.acquireInstanceLease(ctx, inst.ID); err != nil {
+		return inst, err
+	}
+	inst.Status = api.StatusRunning
+	inst.Err = nil
+	inst.Output = nil
+	inst.CurrentStep = 0
+	if err := e.instances.UpdateInstance(inst); err != nil {
+		return inst, err
+	}
+	e.emitEvent(ctx, inst, api.EventWorkflowStarted, -1, "")
+	return e.executeSteps(ctx, def, inst, 0, inst.Input)
+}
+
+func (e *engineImpl) Resume(ctx context.Context, id string) (*api.WorkflowInstance, error) {
+	if e.queue == nil {
+		return e.resumeInline(ctx, id)
+	}
+
+	inst, err := e.instances.GetInstance(id)
+	if err != nil {
+		return nil, err
+	}
+	if inst.Status != api.StatusFailed {
+		return nil, fmt.Errorf("cannot resume instance %s in status %s", id, inst.Status)
+	}
+	e.emitEvent(ctx, inst, api.EventWorkflowEnqueued, -1, "resume")
+	if err := e.queue.Enqueue(ctx, taskqueue.Task{
+		Type:       taskqueue.TaskTypeResume,
+		InstanceID: id,
+		EnqueuedAt: time.Now(),
+	}); err != nil {
+		return inst, err
+	}
+	return inst, nil
+}
+
+// SignalNow delivers a signal and continues execution immediately (no enqueue).
+func (e *engineImpl) SignalNow(ctx context.Context, id string, name string, payload any) (*api.WorkflowInstance, error) {
+	// This is the original synchronous behavior.
+	return e.signalInline(ctx, id, name, payload)
+}
+
+// ResumeNow resumes a failed workflow immediately (no enqueue).
+func (e *engineImpl) ResumeNow(ctx context.Context, id string) (*api.WorkflowInstance, error) {
+	return e.resumeInline(ctx, id)
 }
 
 func (e *engineImpl) GetInstance(ctx context.Context, id string) (*api.WorkflowInstance, error) {
@@ -266,7 +422,91 @@ func (e *engineImpl) ListInstances(ctx context.Context, opts api.InstanceListOpt
 	return e.instances.ListInstances(filter)
 }
 
-func (e *engineImpl) Resume(ctx context.Context, id string) (*api.WorkflowInstance, error) {
+func (e *engineImpl) ListEvents(ctx context.Context, instanceID string) ([]api.WorkflowEvent, error) {
+	if e.events == nil {
+		return nil, nil
+	}
+	return e.events.ListEvents(ctx, instanceID)
+}
+
+func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload any) (*api.WorkflowInstance, error) {
+	if e.queue == nil {
+		return e.signalInline(ctx, id, name, payload)
+	}
+
+	inst, err := e.instances.GetInstance(id)
+	if err != nil {
+		return nil, err
+	}
+	if inst.Status != api.StatusWaiting {
+		return nil, fmt.Errorf("cannot signal instance %s in status %s", id, inst.Status)
+	}
+
+	// Record the signal payload and enqueue work for a worker to resume execution.
+	inst.Err = nil
+	inst.Input = api.SignalPayload{Name: name, Data: payload}
+	if err := e.instances.UpdateInstance(inst); err != nil {
+		return inst, err
+	}
+	e.emitEvent(ctx, inst, api.EventSignalReceived, inst.CurrentStep, name)
+	e.emitEvent(ctx, inst, api.EventWorkflowEnqueued, -1, "signal")
+	if err := e.queue.Enqueue(ctx, taskqueue.Task{
+		Type:       taskqueue.TaskTypeSignal,
+		InstanceID: id,
+		SignalName: name,
+		Payload:    payload,
+		EnqueuedAt: time.Now(),
+	}); err != nil {
+		return inst, err
+	}
+	return inst, nil
+}
+
+func (e *engineImpl) RecoverStuckInstances(ctx context.Context) (int, error) {
+	// We treat any instance that is still StatusRunning as "stuck".
+	// This should be safe if called on startup before any workers are
+	// processing tasks, because nothing should be actively running then.
+	instances, err := e.instances.ListInstances(persistence.InstanceFilter{
+		Status: api.StatusRunning})
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, inst := range instances {
+		// Sanity check; defensive only.
+		if inst.Status != api.StatusRunning {
+			continue
+		}
+
+		inst.Status = api.StatusFailed
+		inst.Err = fmt.Errorf("workflow engine recovered stuck running instance after crash")
+
+		if err := e.instances.UpdateInstance(inst); err != nil {
+			return count, err
+		}
+		count++
+	}
+
+	return count, nil
+}
+
+func (e *engineImpl) emitEvent(ctx context.Context, inst *api.WorkflowInstance, typ api.EventType, step int, detail string) {
+	if e.events == nil || inst == nil {
+		return
+	}
+	_ = e.events.AppendEvent(ctx, api.WorkflowEvent{
+		InstanceID:      inst.ID,
+		At:              time.Now(),
+		Type:            typ,
+		WorkflowName:    inst.Name,
+		WorkflowVersion: inst.Version,
+		Step:            step,
+		Detail:          detail,
+	})
+}
+
+func (e *engineImpl) resumeInline(ctx context.Context, id string) (*api.WorkflowInstance, error) {
 	inst, err := e.instances.GetInstance(id)
 	if err != nil {
 		if errors.Is(err, persistence.ErrInstanceNotFound) {
@@ -310,11 +550,12 @@ func (e *engineImpl) Resume(ctx context.Context, id string) (*api.WorkflowInstan
 	if err := e.instances.UpdateInstance(inst); err != nil {
 		return inst, err
 	}
+	e.emitEvent(ctx, inst, api.EventWorkflowResumed, -1, "")
 
 	return e.executeSteps(ctx, def, inst, 0, inst.Input)
 }
 
-func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload any) (*api.WorkflowInstance, error) {
+func (e *engineImpl) signalInline(ctx context.Context, id string, name string, payload any) (*api.WorkflowInstance, error) {
 	inst, err := e.instances.GetInstance(id)
 	if err != nil {
 		if errors.Is(err, persistence.ErrInstanceNotFound) {
@@ -348,7 +589,8 @@ func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload
 		return nil, api.ErrWorkflowDefinitionMismatch
 	}
 
-	// Prepare signal payload as the new input to the waiting step.
+	// Prepare signal payload; resume AFTER the waiting step, passing the full SignalPayload
+	// to the next step. This lets downstream logic inspect Name/Data when desired.
 	inst.Status = api.StatusRunning
 	inst.Err = nil
 	inst.Input = api.SignalPayload{
@@ -359,38 +601,11 @@ func (e *engineImpl) Signal(ctx context.Context, id string, name string, payload
 	if err := e.instances.UpdateInstance(inst); err != nil {
 		return inst, err
 	}
+	e.emitEvent(ctx, inst, api.EventWorkflowResumed, inst.CurrentStep, "signal")
 
-	// Resume from the waiting step.
+	// Resume from the waiting step; it will consume the SignalPayload and
+	// yield the underlying Data to subsequent steps.
 	return e.executeSteps(ctx, def, inst, inst.CurrentStep, inst.Input)
-}
-
-func (e *engineImpl) RecoverStuckInstances(ctx context.Context) (int, error) {
-	// We treat any instance that is still StatusRunning as "stuck".
-	// This should be safe if called on startup before any workers are
-	// processing tasks, because nothing should be actively running then.
-	instances, err := e.instances.ListInstances(persistence.InstanceFilter{
-		Status: api.StatusRunning})
-	if err != nil {
-		return 0, err
-	}
-
-	count := 0
-	for _, inst := range instances {
-		// Sanity check; defensive only.
-		if inst.Status != api.StatusRunning {
-			continue
-		}
-
-		inst.Status = api.StatusFailed
-		inst.Err = fmt.Errorf("workflow engine recovered stuck running instance after crash")
-
-		if err := e.instances.UpdateInstance(inst); err != nil {
-			return count, err
-		}
-		count++
-	}
-
-	return count, nil
 }
 
 func (e *engineImpl) nextInstanceID() string {
@@ -417,6 +632,23 @@ func (e *engineImpl) renewInstanceLease(ctx context.Context, instanceID string) 
 
 func (e *engineImpl) releaseInstanceLease(ctx context.Context, instanceID string) {
 	_ = e.instances.ReleaseLease(ctx, instanceID, e.engineID)
+}
+
+// validateWorkflowFingerprint ensures the registered workflow definition's fingerprint
+// matches the strict fingerprint computed from its deterministic metadata.
+// This protects against accidental non-deterministic changes between registration
+// and execution. Returns ErrWorkflowDefinitionMismatch on mismatch.
+func (e *engineImpl) validateWorkflowFingerprint(def api.WorkflowDefinition) error {
+	if def.Fingerprint == "" {
+		// Should not happen because RegisterWorkflow sets it, but guard anyway.
+		def.Fingerprint = api.ComputeWorkflowFingerprintStrict(def)
+		return nil
+	}
+	strict := api.ComputeWorkflowFingerprintStrict(def)
+	if strict != def.Fingerprint {
+		return api.ErrWorkflowDefinitionMismatch
+	}
+	return nil
 }
 
 func (e *engineImpl) executeSteps(
@@ -447,6 +679,7 @@ func (e *engineImpl) executeSteps(
 
 		inst.CurrentStep = i
 		_ = e.instances.UpdateInstance(inst)
+		e.emitEvent(ctx, inst, api.EventStepStarted, i, step.Name)
 
 		// Determine max attempts for this step.
 		maxAttempts := 1
@@ -487,6 +720,8 @@ func (e *engineImpl) executeSteps(
 				inst.Status = api.StatusFailed
 				inst.Err = ctx.Err()
 				_ = e.instances.UpdateInstance(inst)
+				e.emitEvent(ctx, inst, api.EventStepFailed, i, step.Name+": "+ctx.Err().Error())
+				e.emitEvent(ctx, inst, api.EventWorkflowFailed, -1, ctx.Err().Error())
 				e.observer.OnWorkflowFailed(ctx, inst, ctx.Err())
 				return inst, ctx.Err()
 			default:
@@ -517,6 +752,7 @@ func (e *engineImpl) executeSteps(
 				}
 				inst.StepResults[i] = next
 				_ = e.instances.UpdateInstance(inst)
+				e.emitEvent(stepCtx, inst, api.EventStepCompleted, i, step.Name)
 
 				break
 			}
@@ -527,6 +763,7 @@ func (e *engineImpl) executeSteps(
 				inst.Err = nil
 				// We could track sigName somewhere later if needed.
 				_ = e.instances.UpdateInstance(inst)
+				e.emitEvent(stepCtx, inst, api.EventWorkflowWaiting, i, step.Name)
 				e.releaseInstanceLease(context.Background(), inst.ID)
 				return inst, err
 			}
@@ -537,6 +774,7 @@ func (e *engineImpl) executeSteps(
 				inst.Status = api.StatusWaiting
 				inst.Err = nil
 				_ = e.instances.UpdateInstance(inst)
+				e.emitEvent(stepCtx, inst, api.EventWorkflowWaiting, i, step.Name)
 				e.releaseInstanceLease(context.Background(), inst.ID)
 				return inst, err
 			}
@@ -556,6 +794,8 @@ func (e *engineImpl) executeSteps(
 				inst.Status = api.StatusFailed
 				inst.Err = lastErr
 				_ = e.instances.UpdateInstance(inst)
+				e.emitEvent(stepCtx, inst, api.EventStepFailed, i, step.Name+": "+lastErr.Error())
+				e.emitEvent(stepCtx, inst, api.EventWorkflowFailed, -1, lastErr.Error())
 				e.observer.OnWorkflowFailed(ctx, inst, lastErr)
 				e.releaseInstanceLease(context.Background(), inst.ID)
 				return inst, lastErr
@@ -574,6 +814,8 @@ func (e *engineImpl) executeSteps(
 					inst.Status = api.StatusFailed
 					inst.Err = ctx.Err()
 					_ = e.instances.UpdateInstance(inst)
+					e.emitEvent(ctx, inst, api.EventStepFailed, i, step.Name+": "+ctx.Err().Error())
+					e.emitEvent(ctx, inst, api.EventWorkflowFailed, -1, ctx.Err().Error())
 					return inst, ctx.Err()
 				case <-time.After(delay):
 					// continue to next attempt
@@ -597,6 +839,7 @@ func (e *engineImpl) executeSteps(
 	inst.CurrentStep = len(def.Steps)
 	_ = e.instances.UpdateInstance(inst)
 
+	e.emitEvent(ctx, inst, api.EventWorkflowCompleted, -1, "")
 	e.observer.OnWorkflowCompleted(ctx, inst)
 	e.releaseInstanceLease(context.Background(), inst.ID)
 

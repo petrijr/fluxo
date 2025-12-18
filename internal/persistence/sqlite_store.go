@@ -21,7 +21,7 @@ type SQLiteInstanceStore struct {
 	db *sql.DB
 }
 
-// Ensure SQLiteInstanceStore implements InstanceStore.
+// Ensure SQLiteInstanceStore implements the interfaces.
 var _ InstanceStore = (*SQLiteInstanceStore)(nil)
 
 // NewSQLiteInstanceStore initializes the required schema in the given

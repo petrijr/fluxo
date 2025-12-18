@@ -11,6 +11,8 @@ type TaskType string
 const (
 	TaskTypeStartWorkflow TaskType = "start-workflow"
 	TaskTypeSignal        TaskType = "signal"
+	// TaskTypeResume asks the worker/engine to resume a failed instance.
+	TaskTypeResume TaskType = "resume"
 )
 
 // Task represents a unit of work for the worker.
@@ -27,7 +29,7 @@ type Task struct {
 	SignalName string
 
 	// Payload is task-type specific:
-	//   - start-workflow: StartWorkflowPayload
+	//   - start-workflow: api.StartWorkflowPayload
 	//   - signal: arbitrary payload to pass to engine.Signal
 	Payload any
 

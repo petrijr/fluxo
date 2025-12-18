@@ -5,4 +5,5 @@ package persistence
 type Persistence struct {
 	Workflows WorkflowStore
 	Instances InstanceStore
+	Events    EventStore
 }

@@ -15,6 +15,7 @@ type InMemoryStore struct {
 	mu        sync.RWMutex
 	workflows map[string]map[string]api.WorkflowDefinition
 	instances map[string]*api.WorkflowInstance
+	events    map[string][]api.WorkflowEvent
 }
 
 // NewInMemoryStore creates a new InMemoryStore.
@@ -22,13 +23,14 @@ func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{
 		workflows: make(map[string]map[string]api.WorkflowDefinition),
 		instances: make(map[string]*api.WorkflowInstance),
+		events:    make(map[string][]api.WorkflowEvent),
 	}
 }
 
 // Ensure InMemoryStore implements the interfaces.
 var _ WorkflowStore = (*InMemoryStore)(nil)
-
 var _ InstanceStore = (*InMemoryStore)(nil)
+var _ EventStore = (*InMemoryStore)(nil)
 
 func (s *InMemoryStore) SaveWorkflow(def api.WorkflowDefinition) error {
 	s.mu.Lock()
@@ -207,4 +209,22 @@ func (s *InMemoryStore) ReleaseLease(ctx context.Context, instanceID, owner stri
 	inst.LeaseOwner = ""
 	inst.LeaseExpiresAt = time.Time{}
 	return nil
+}
+
+// AppendEvent appends an event to the in-memory history.
+func (s *InMemoryStore) AppendEvent(ctx context.Context, ev api.WorkflowEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events[ev.InstanceID] = append(s.events[ev.InstanceID], ev)
+	return nil
+}
+
+// ListEvents returns all events for an instance in chronological order.
+func (s *InMemoryStore) ListEvents(ctx context.Context, instanceID string) ([]api.WorkflowEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	evs := s.events[instanceID]
+	out := make([]api.WorkflowEvent, len(evs))
+	copy(out, evs)
+	return out, nil
 }

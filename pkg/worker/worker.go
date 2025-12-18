@@ -21,12 +21,7 @@ func randomWorkerID() string {
 }
 
 func init() {
-	gob.Register(StartWorkflowPayload{})
-}
-
-// StartWorkflowPayload is the payload for a "start-workflow" task.
-type StartWorkflowPayload struct {
-	Input any
+	gob.Register(api.StartWorkflowPayload{})
 }
 
 // Config controls worker-level retries of tasks.
@@ -102,7 +97,7 @@ func (w *Worker) EnqueueStartWorkflow(ctx context.Context, workflowName string, 
 		ID:           "", // optional; could be filled with a UUID later
 		Type:         taskqueue.TaskTypeStartWorkflow,
 		WorkflowName: workflowName,
-		Payload: StartWorkflowPayload{
+		Payload: api.StartWorkflowPayload{
 			Input: input,
 		},
 		EnqueuedAt: time.Now(),
@@ -119,7 +114,7 @@ func (w *Worker) EnqueueStartWorkflowAt(ctx context.Context, workflowName string
 		ID:           "",
 		Type:         taskqueue.TaskTypeStartWorkflow,
 		WorkflowName: workflowName,
-		Payload: StartWorkflowPayload{
+		Payload: api.StartWorkflowPayload{
 			Input: input,
 		},
 		EnqueuedAt: time.Now(),
@@ -250,13 +245,23 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 
 	switch task.Type {
 	case taskqueue.TaskTypeStartWorkflow:
-		payload, ok := task.Payload.(StartWorkflowPayload)
+		payload, ok := task.Payload.(api.StartWorkflowPayload)
 		if !ok {
 			return true, errors.New("invalid payload type for start-workflow task")
 		}
 
 		stopHB := startHeartbeat()
-		inst, runErr := w.engine.Run(ctx, task.WorkflowName, payload.Input)
+		var inst *api.WorkflowInstance
+		var runErr error
+		if task.InstanceID != "" {
+			if de, ok := w.engine.(api.WorkerDirect); ok {
+				inst, runErr = de.RunInstance(ctx, task.InstanceID)
+			} else {
+				runErr = errors.New("engine does not support RunInstance for queued start")
+			}
+		} else {
+			inst, runErr = w.engine.Run(ctx, task.WorkflowName, payload.Input)
+		}
 		stopHB()
 		if runErr != nil {
 			// Special case: workflow is now WAITING for a signal.
@@ -274,10 +279,11 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 						Attempts:   0,
 					}
 					_ = w.queue.Enqueue(ctx, timeoutTask)
+					// Treat as successfully processed when auto-timeout is scheduled.
+					return true, handleErr(nil)
 				}
-				// We successfully parked the workflow and possibly scheduled a timeout.
-				// This is not a failure of the task itself.
-				return true, handleErr(nil)
+				// No auto-timeout configured: surface the wait error.
+				return true, handleErr(runErr)
 			}
 
 			// Other errors: use worker-level retry logic.
@@ -288,9 +294,14 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 		return true, handleErr(nil)
 
 	case taskqueue.TaskTypeSignal:
-		// Deliver the signal.
+		// Deliver the signal. Prefer direct delivery to avoid re-enqueue loops.
 		stopHB := startHeartbeat()
-		_, sigErr := w.engine.Signal(ctx, task.InstanceID, task.SignalName, task.Payload)
+		var sigErr error
+		if de, ok := w.engine.(api.WorkerDirect); ok {
+			_, sigErr = de.SignalNow(ctx, task.InstanceID, task.SignalName, task.Payload)
+		} else {
+			_, sigErr = w.engine.Signal(ctx, task.InstanceID, task.SignalName, task.Payload)
+		}
 		stopHB()
 
 		// If this is an auto-timeout signal, we consider it best effort:
@@ -303,6 +314,16 @@ func (w *Worker) ProcessOne(ctx context.Context) (bool, error) {
 
 		return true, handleErr(sigErr)
 
+	case taskqueue.TaskTypeResume:
+		stopHB := startHeartbeat()
+		var resErr error
+		if de, ok := w.engine.(api.WorkerDirect); ok {
+			_, resErr = de.ResumeNow(ctx, task.InstanceID)
+		} else {
+			_, resErr = w.engine.Resume(ctx, task.InstanceID)
+		}
+		stopHB()
+		return true, handleErr(resErr)
 	default:
 		_ = w.queue.Ack(ctx, task.ID, w.cfg.WorkerID)
 		return true, errors.New("unknown task type: " + string(task.Type))
