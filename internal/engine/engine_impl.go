@@ -589,23 +589,27 @@ func (e *engineImpl) signalInline(ctx context.Context, id string, name string, p
 		return nil, api.ErrWorkflowDefinitionMismatch
 	}
 
-	// Prepare signal payload; resume AFTER the waiting step, passing the full SignalPayload
-	// to the next step. This lets downstream logic inspect Name/Data when desired.
+	// Prepare signal payload; resume AT the waiting step, passing the SignalPayload
+	// as input so the step itself can validate the signal name and decide whether to
+	// continue or request to wait again. This makes mismatched signals safely ignored.
 	inst.Status = api.StatusRunning
 	inst.Err = nil
-	inst.Input = api.SignalPayload{
-		Name: name,
-		Data: payload,
-	}
+
+	sp := api.SignalPayload{Name: name, Data: payload}
+	inst.Input = sp
+
+	// Clear any previous WaitMeta; the step will decide how to proceed.
+	inst.Output = nil
 
 	if err := e.instances.UpdateInstance(inst); err != nil {
 		return inst, err
 	}
 	e.emitEvent(ctx, inst, api.EventWorkflowResumed, inst.CurrentStep, "signal")
 
-	// Resume from the waiting step; it will consume the SignalPayload and
-	// yield the underlying Data to subsequent steps.
-	return e.executeSteps(ctx, def, inst, inst.CurrentStep, inst.Input)
+	// Resume execution starting from the waiting step, providing the SignalPayload
+	// as the current input. The step function (WaitForSignalStep/WaitForAnySignalStep)
+	// will either accept it and advance, or return a wait error to keep waiting.
+	return e.executeSteps(ctx, def, inst, inst.CurrentStep, sp)
 }
 
 func (e *engineImpl) nextInstanceID() string {
@@ -758,10 +762,10 @@ func (e *engineImpl) executeSteps(
 			}
 
 			// NEW: wait-for-signal special case (sigName = _)
-			if _, ok := api.IsWaitForSignalError(err); ok {
+			if _, returnPayload, ok := api.WaitForSignalMeta(err); ok {
 				inst.Status = api.StatusWaiting
 				inst.Err = nil
-				// We could track sigName somewhere later if needed.
+				inst.Output = api.WaitMeta{Kind: "signal", ReturnPayload: returnPayload}
 				_ = e.instances.UpdateInstance(inst)
 				e.emitEvent(stepCtx, inst, api.EventWorkflowWaiting, i, step.Name)
 				e.releaseInstanceLease(context.Background(), inst.ID)

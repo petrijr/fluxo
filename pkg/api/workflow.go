@@ -17,6 +17,7 @@ import (
 func init() {
 	gob.Register(SignalPayload{})
 	gob.Register(TimeoutPayload{})
+	gob.Register(WaitMeta{})
 	gob.Register(map[int]any{})
 	gob.Register(map[int]interface{}{}) // important
 	gob.Register((*interface{})(nil))   // important
@@ -38,6 +39,11 @@ type ParallelResult struct {
 	Index int
 	Value any
 	Err   error
+}
+
+type WaitMeta struct {
+	Kind          string // "signal" (future-proof)
+	ReturnPayload bool
 }
 
 // StepFunc is a single step in a workflow.
@@ -90,6 +96,14 @@ func SleepUntilStep(deadline time.Time) StepFunc {
 			return input, nil
 		}
 	}
+}
+
+func WaitForSignalMeta(err error) (name string, returnPayload bool, ok bool) {
+	var w *waitForSignalError
+	if errors.As(err, &w) {
+		return w.Name, w.ReturnPayload, true
+	}
+	return "", false, false
 }
 
 // WaitForSignalStep returns a step that parks the workflow until a signal
@@ -153,7 +167,7 @@ func WaitForAnySignalStep(names ...string) StepFunc {
 			}
 		}
 		// First invocation or unexpected signal: request to wait again.
-		return nil, NewWaitForSignalError(primary)
+		return nil, NewWaitForAnySignalError(primary)
 	}
 }
 
@@ -815,7 +829,8 @@ type TimeoutPayload struct {
 // waitForSignalError is returned by steps that want to park the workflow
 // until an external signal with the given name arrives.
 type waitForSignalError struct {
-	Name string
+	Name          string
+	ReturnPayload bool
 }
 
 // ComputeWorkflowFingerprintStrict computes a fingerprint intended for safe deploys.
@@ -892,7 +907,13 @@ func (e *waitForSignalError) Error() string {
 // constructors (like WaitForSignalStep), but can be used by custom steps
 // to integrate with the engine's signal semantics.
 func NewWaitForSignalError(name string) error {
-	return &waitForSignalError{Name: name}
+	return &waitForSignalError{Name: name, ReturnPayload: false}
+}
+
+// NewWaitForAnySignalError requests waiting and indicates the step wants to
+// receive/return a full SignalPayload on resume.
+func NewWaitForAnySignalError(name string) error {
+	return &waitForSignalError{Name: name, ReturnPayload: true}
 }
 
 // IsWaitForSignalError returns (signalName, true) if Err indicates that
